@@ -1814,7 +1814,7 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Save HTML file
         safe_name = re.sub(r'[^\w\s-]', '', context.user_data['name'])
         safe_name = re.sub(r'[-\s]+', '_', safe_name)
-        html_file = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        html_file = f"{safe_name}.html"
         
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_content)
