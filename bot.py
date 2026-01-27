@@ -114,10 +114,10 @@ def parse_txt_file(content):
     questions = []
     
     # Split by double newlines (question blocks)
-    blocks = content.strip().split('\n\n')
+    blocks = re.split(r'\n\s*\n', content.strip())
     
     for block in blocks:
-        lines = block.strip().split('\n')
+        lines = [line.strip() for line in block.strip().split('\n') if line.strip()]
         if len(lines) < 7:  # Minimum lines for a question
             continue
             
@@ -128,42 +128,54 @@ def parse_txt_file(content):
             "solution_text": ""
         }
         
-        # Extract question (English and Hindi)
+        current_line = 0
+        
+        # Extract question (first line with number)
         question_lines = []
-        i = 0
-        while i < len(lines) and not lines[i].startswith('a)'):
-            question_lines.append(lines[i])
-            i += 1
+        while current_line < len(lines) and not lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
+            # Remove question number if present
+            line_text = lines[current_line]
+            if re.match(r'^\d+\.\s*', line_text):
+                line_text = re.sub(r'^\d+\.\s*', '', line_text)
+            question_lines.append(line_text)
+            current_line += 1
+        
         question["question"] = '<br>'.join(question_lines)
         
         # Extract options (4-5 options)
         option_count = 0
-        while i < len(lines) and lines[i][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
+        while current_line < len(lines) and lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
             option_key = f"option_{option_count + 1}"
-            question[option_key] = lines[i]
-            i += 1
-            option_count += 1
+            option_text = lines[current_line]
+            current_line += 1
             
-            # Add Hindi line if exists
-            if i < len(lines) and lines[i].strip() and not lines[i].startswith('Correct'):
-                question[option_key] += f"\n{lines[i]}"
-                i += 1
+            # Add Hindi line if exists (next line doesn't start with option or Correct/ex)
+            if (current_line < len(lines) and 
+                not lines[current_line].startswith('Correct') and 
+                not lines[current_line].startswith('ex:') and
+                not lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']):
+                option_text += f"<br>{lines[current_line]}"
+                current_line += 1
+            
+            question[option_key] = option_text
+            option_count += 1
         
         # Extract correct answer
-        while i < len(lines) and lines[i].startswith('Correct'):
-            if ':-' in lines[i]:
-                ans = lines[i].split(':-')[1].strip()
+        while current_line < len(lines) and lines[current_line].startswith('Correct'):
+            if ':-' in lines[current_line]:
+                ans = lines[current_line].split(':-')[1].strip()
                 # Map a->1, b->2, etc.
                 answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
                 question["answer"] = answer_map.get(ans.lower(), '1')
-            i += 1
+            current_line += 1
         
         # Extract explanation
         solution_lines = []
-        while i < len(lines) and lines[i].startswith('ex:'):
-            solution_lines.append(lines[i][3:].strip())  # Remove 'ex:'
-            i += 1
-        question["solution_text"] = '\n'.join(solution_lines)
+        while current_line < len(lines) and lines[current_line].startswith('ex:'):
+            solution_lines.append(lines[current_line][3:].strip())
+            current_line += 1
+        
+        question["solution_text"] = '<br>'.join(solution_lines)
         
         # Add metadata
         question["correct_score"] = "3"
@@ -1132,22 +1144,28 @@ function submitQuiz(){{
   const timeTakenSeconds = TOTAL_TIME_SECONDS - seconds;
 
   let correct = 0, wrong = 0, totalMarks = 0;
+  let attemptedCount = 0;
+  
   QUESTIONS.forEach((q, i) => {{
     const qid = q.id ?? i;
     const ans = answers[qid];
+    if (ans) attemptedCount++;
+    
     const isCorrect = ans && String(ans) === String(q.answer);
     if(isCorrect) correct++;
     else if(ans) wrong++;
+    
     const cs = Number(q.correct_score ?? 1);
     const ns = Number(q.negative_score ?? 0);
     if(isCorrect) totalMarks += cs;
     else if(ans) totalMarks -= ns;
   }});
+  
   // ✅ STEP 1: calculate maximum total marks
-let maxTotalMarks = 0;
-QUESTIONS.forEach(q => {{
-  maxTotalMarks += Number(q.correct_score ?? 1);
-}});
+  let maxTotalMarks = 0;
+  QUESTIONS.forEach(q => {{
+    maxTotalMarks += Number(q.correct_score ?? 1);
+  }});
 
   const attempted = Object.keys(answers).length;
   const unattempted = QUESTIONS.length - attempted;
@@ -1161,7 +1179,7 @@ QUESTIONS.forEach(q => {{
       <div class="stat"><h4>Wrong</h4><p>${{wrong}}</p></div>
       <div class="stat"><h4>Unattempted</h4><p>${{unattempted}}</p></div>
       <div class="stat"><h4>Accuracy</h4><p>${{accuracy}}%</p></div>
-      <div class="stat"><h4>Total Marks</h4><p>${{totalMarks}}</p></div>
+      <div class="stat"><h4>Total Marks</h4><p>${{totalMarks}} / ${{maxTotalMarks}}</p></div>
       <div class="stat"><h4>Time Taken</h4><p>${{fmt(timeTakenSeconds)}}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
       <button class="btn-ghost" onclick="filterResults('all')">ALL</button>
@@ -1223,6 +1241,7 @@ const firebasePayload = {{
   total: maxTotalMarks,
   correct,
   wrong,
+  unattempted,
   timeTaken,
   quizId: "{quiz_name}",
   deviceId: DEVICE_ID,
@@ -1515,25 +1534,23 @@ window.addEventListener("DOMContentLoaded", init);
         q["id"] = str(50000 + i + 1)
         q["quiz_id"] = quiz_data["name"]
         
+        # Update scores with actual values from quiz data
+        q["correct_score"] = str(quiz_data.get("marks", "3"))
+        q["negative_score"] = str(quiz_data.get("negative", "1"))
+        
         # Convert to JSON-like string
         q_str = json.dumps(q, ensure_ascii=False)
         questions_js += q_str + ",\n"
     questions_js = questions_js.rstrip(",\n") + "\n]"
     
-    # Replace placeholders
-    seconds = int(quiz_data["time"]) * 60
+    # Calculate seconds
+    seconds = int(quiz_data.get("time", "25")) * 60
     
     html = template.format(
         quiz_name=quiz_data["name"],
         questions_array=questions_js,
         seconds=seconds
     )
-    
-    # Replace marks
-    html = html.replace('"correct_score": "3"', f'"correct_score": "{quiz_data["marks"]}"')
-    
-    # Replace negative marking
-    html = html.replace('"negative_score": "1"', f'"negative_score": "{quiz_data["negative"]}"')
     
     return html
 
@@ -1763,15 +1780,16 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     context.user_data["creator"] = update.message.text
     
-    # Show summary
+    # Show summary with proper format
+    total_questions = len(context.user_data["questions"])
     summary = (
         "📋 *Quiz Summary*\n\n"
-        f"📚 Name: {context.user_data['name']}\n"
-        f"⏱️ Time: {context.user_data['time']} minutes\n"
-        f"✍️ Marks per question: {context.user_data['marks']}\n"
-        f"⚠️ Negative marking: {context.user_data['negative']}\n"
-        f"🏆 Created by: {context.user_data['creator']}\n"
-        f"📊 Questions: {len(context.user_data['questions'])}\n\n"
+        f"📘 QUIZ ID: {context.user_data['name']}\n"
+        f"📊 TOTAL QUESTIONS: {total_questions}\n"
+        f"⏱️ TIME: {context.user_data['time']} Minutes\n"
+        f"✍️ EACH QUESTION MARK: {context.user_data['marks']}\n"
+        f"⚠️ NEGATIVE MARKING: {context.user_data['negative']}\n"
+        f"🏆 CREATED BY: {context.user_data['creator']}\n\n"
         "🔄 Generating quiz HTML..."
     )
     
@@ -1787,7 +1805,7 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=progress_msg.message_id,
-            text=f"{summary}\n\n🔄 Processing questions..."
+            text=f"{summary}\n\n🔄 Processing {total_questions} questions..."
         )
         
         # Generate quiz HTML
@@ -1808,20 +1826,19 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"{summary}\n\n✅ Quiz generated! Sending file..."
         )
         
-        # Send HTML file
+        # Send HTML file with proper caption format
         with open(html_file, "rb") as f:
             await update.message.reply_document(
                 document=f,
                 filename=html_file,
                 caption=f"✅ *Quiz Generated Successfully!*\n\n"
                        f"Download and open in any browser.\n\n"
-                       f"**Quiz Info:**\n"
-                       f"• Name: {context.user_data['name']}\n"
-                       f"• Questions: {len(context.user_data['questions'])}\n"
-                       f"• Time: {context.user_data['time']} minutes\n"
-                       f"• Marks: {context.user_data['marks']} per question\n"
-                       f"• Negative: {context.user_data['negative']}\n"
-                       f"• Creator: {context.user_data['creator']}",
+                       f"📘 QUIZ ID: {context.user_data['name']}\n"
+                       f"📊 TOTAL QUESTIONS: {total_questions}\n"
+                       f"⏱️ TIME: {context.user_data['time']} Minutes\n"
+                       f"✍️ EACH QUESTION MARK: {context.user_data['marks']}\n"
+                       f"⚠️ NEGATIVE MARKING: {context.user_data['negative']}\n"
+                       f"🏆 CREATED BY: {context.user_data['creator']}",
                 parse_mode="Markdown"
             )
         
