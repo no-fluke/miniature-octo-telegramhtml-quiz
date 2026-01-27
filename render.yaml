@@ -1,14 +1,28 @@
 services:
   - type: web
-    name: pdf-downloader-bot
+    name: quiz-generator-bot
     env: python
-    plan: free
-    buildCommand: |
-      pip install -r requirements.txt
-      apt-get update && apt-get install -y chromium chromium-driver wget
-    startCommand: python main.py
+    buildCommand: pip install -r requirements.txt && apt-get update && apt-get install -y chromium chromium-driver
+    startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
-        value: your_telegram_bot_token_here
+        sync: false
       - key: RENDER_APP_URL
-        value: https://your-app-name.onrender.com
+        fromService:
+          type: web
+          name: quiz-generator-bot
+          property: url
+      - key: PORT
+        value: 10000
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: temp
+      mountPath: /tmp
+      sizeGB: 1
+    plan: free
+    scaling:
+      minInstances: 1
+      maxInstances: 1
