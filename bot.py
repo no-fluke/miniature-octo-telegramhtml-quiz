@@ -109,23 +109,208 @@ def update_activity():
     global last_activity
     last_activity = time.time()
 
+def convert_to_chsl_format(content):
+    """Convert any text file to CHSL TXT format"""
+    
+    lines = content.strip().split('\n')
+    output_lines = []
+    question_number = 1
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        if not line:
+            i += 1
+            continue
+        
+        if (re.match(r'^\d+[\.\)]', line) or 
+            re.match(r'^[Qq]\s*\d+[\.\):]', line) or
+            re.match(r'^Question\s*\d+[:\.]', line)):
+            
+            question_text = re.sub(r'^\d+[\.\)]\s*', '', line)
+            question_text = re.sub(r'^[Qq]\s*\d+[\.\):]\s*', '', question_text)
+            question_text = re.sub(r'^Question\s*\d+[:\.]\s*', '', question_text)
+            
+            output_lines.append(f"{question_number}. {question_text}")
+            
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if (next_line and 
+                    not re.match(r'^[a-eA-E1-5][\.\)]', next_line) and
+                    not re.match(r'^[Aa]nswer', next_line) and
+                    not re.match(r'^[Cc]orrect', next_line) and
+                    not re.match(r'^[Ee]xplanation', next_line) and
+                    not re.match(r'^[Ee]x:', next_line)):
+                    output_lines.append(f"   {next_line}")
+                    i += 2
+                else:
+                    output_lines.append(f"   ")
+                    i += 1
+            else:
+                output_lines.append(f"   ")
+                i += 1
+            
+            option_count = 0
+            option_letter = ord('a')
+            
+            while i < len(lines) and option_count < 5:
+                line = lines[i].strip()
+                
+                option_match = re.match(r'^([a-eA-E1-5])[\.\)]\s*(.+)', line)
+                if option_match:
+                    option_label = option_match.group(1).lower()
+                    option_text = option_match.group(2)
+                    
+                    if option_label.isdigit():
+                        option_map = {'1': 'a', '2': 'b', '3': 'c', '4': 'd', '5': 'e'}
+                        option_label = option_map.get(option_label, chr(option_letter))
+                    
+                    output_lines.append(f"{option_label}) {option_text}")
+                    
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if (next_line and 
+                            not re.match(r'^[a-eA-E1-5][\.\)]', next_line) and
+                            not re.match(r'^[Aa]nswer', next_line) and
+                            not re.match(r'^[Cc]orrect', next_line) and
+                            not re.match(r'^[Ee]xplanation', next_line) and
+                            not re.match(r'^[Ee]x:', next_line)):
+                            output_lines.append(f"   {next_line}")
+                            i += 2
+                        else:
+                            output_lines.append(f"   ")
+                            i += 1
+                    else:
+                        output_lines.append(f"   ")
+                        i += 1
+                    
+                    option_letter += 1
+                    option_count += 1
+                else:
+                    break
+            
+            correct_answer = None
+            explanation = None
+            
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                answer_match = re.search(r'[Cc]orrect\s*[Aa]nswer\s*[:=-]?\s*([a-eA-E1-5])', line)
+                if not answer_match:
+                    answer_match = re.search(r'[Aa]nswer\s*[:=-]?\s*([a-eA-E1-5])', line)
+                if not answer_match:
+                    answer_match = re.search(r'^([a-eA-E])\s*$', line)
+                
+                if answer_match:
+                    ans = answer_match.group(1).lower()
+                    if ans.isdigit():
+                        ans_map = {'1': 'a', '2': 'b', '3': 'c', '4': 'd', '5': 'e'}
+                        ans = ans_map.get(ans, 'a')
+                    correct_answer = ans
+                    output_lines.append(f"Correct option:-{ans}")
+                    i += 1
+                    break
+                
+                i += 1
+            
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                if re.match(r'^[Ee]xplanation', line) or re.match(r'^[Ee]x:', line) or re.match(r'^[Nn]ote:', line):
+                    explanation = re.sub(r'^[Ee]xplanation\s*[:.]?\s*', '', line)
+                    explanation = re.sub(r'^[Ee]x:\s*', '', explanation)
+                    explanation = re.sub(r'^[Nn]ote:\s*', '', explanation)
+                    
+                    output_lines.append(f"ex: {explanation}")
+                    i += 1
+                    break
+                elif line and not re.match(r'^\d+[\.\)]', line) and not re.match(r'^[Qq]', line):
+                    output_lines.append(f"ex: {line}")
+                    i += 1
+                    break
+                else:
+                    break
+            
+            if not any('ex:' in line for line in output_lines[-3:]):
+                output_lines.append(f"ex: Explanation for question {question_number}")
+            
+            output_lines.append('')
+            question_number += 1
+        
+        else:
+            output_lines.append(f"{question_number}. {line}")
+            
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not re.match(r'^[a-eA-E]', next_line):
+                    output_lines.append(f"   {next_line}")
+                    i += 2
+                else:
+                    output_lines.append(f"   ")
+                    i += 1
+            else:
+                output_lines.append(f"   ")
+                i += 1
+            
+            output_lines.extend([
+                "a) Option A",
+                "   ",
+                "b) Option B",
+                "   ",
+                "c) Option C",
+                "   ",
+                "d) Option D",
+                "   ",
+                "Correct option:-a",
+                "ex: Add explanation here",
+                ""
+            ])
+            question_number += 1
+    
+    return '\n'.join(output_lines)
+
+def detect_and_format_txt(content):
+    """Auto-detect format and convert to CHSL format"""
+    lines = [line.strip() for line in content.split('\n') if line.strip()]
+    
+    chsl_patterns = 0
+    other_patterns = 0
+    
+    for line in lines:
+        if re.match(r'^\d+\.\s+.*[^\s]$', line) and not re.match(r'^[a-e]\)', line):
+            chsl_patterns += 1
+        if re.match(r'^[a-e]\)\s+', line):
+            chsl_patterns += 1
+        if re.match(r'^Correct option:-[a-e]$', line):
+            chsl_patterns += 1
+        if re.match(r'^ex:\s+', line):
+            chsl_patterns += 1
+        
+        if re.match(r'^Q\d+[:.]', line, re.IGNORECASE):
+            other_patterns += 1
+        if re.match(r'^[A-E][\.\)]', line):
+            other_patterns += 1
+        if re.match(r'^Answer[:=]', line, re.IGNORECASE):
+            other_patterns += 1
+        if re.match(r'^Explanation[:.]', line, re.IGNORECASE):
+            other_patterns += 1
+    
+    if chsl_patterns > other_patterns * 2:
+        return content, False
+    
+    converted = convert_to_chsl_format(content)
+    return converted, True
+
 def parse_txt_file(content):
-    """Parse the TXT file format and extract questions - More robust version"""
+    """Parse the TXT file format and extract questions"""
     questions = []
     
-    # Remove any extra whitespace
-    content = content.strip()
+    blocks = re.split(r'\n\s*\n', content.strip())
     
-    # Split by question number pattern (e.g., "1.", "2.", "3.", etc.)
-    # This regex looks for numbers followed by a dot at the start of a line
-    question_blocks = re.split(r'\n(?=\d+\.)', content)
-    
-    # Remove any empty blocks
-    question_blocks = [block.strip() for block in question_blocks if block.strip()]
-    
-    for block in question_blocks:
-        lines = [line.strip() for line in block.split('\n') if line.strip()]
-        if len(lines) < 3:  # Minimum lines: question, at least 2 options, and answer
+    for block in blocks:
+        lines = [line.strip() for line in block.strip().split('\n') if line.strip()]
+        if len(lines) < 7:
             continue
             
         question = {
@@ -135,94 +320,50 @@ def parse_txt_file(content):
             "solution_text": ""
         }
         
-        # Find the start of options (lines starting with a), b), c), d), e))
-        option_start_index = -1
-        for i, line in enumerate(lines):
-            if re.match(r'^[a-e]\)', line, re.IGNORECASE):
-                option_start_index = i
-                break
+        current_line = 0
         
-        if option_start_index == -1:
-            # Try another pattern: lines starting with lowercase letters and parenthesis
-            for i, line in enumerate(lines):
-                if re.match(r'^[a-e]\.', line, re.IGNORECASE):
-                    option_start_index = i
-                    break
+        question_lines = []
+        while current_line < len(lines) and not lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
+            line_text = lines[current_line]
+            if re.match(r'^\d+\.\s*', line_text):
+                line_text = re.sub(r'^\d+\.\s*', '', line_text)
+            question_lines.append(line_text)
+            current_line += 1
         
-        if option_start_index == -1:
-            continue  # Skip if no options found
-        
-        # Extract question (all lines before options)
-        question_lines = lines[:option_start_index]
-        # Remove question number from first line
-        if question_lines and re.match(r'^\d+\.', question_lines[0]):
-            question_lines[0] = re.sub(r'^\d+\.\s*', '', question_lines[0])
         question["question"] = '<br>'.join(question_lines)
         
-        # Extract options
-        i = option_start_index
         option_count = 0
-        while i < len(lines) and option_count < 5:
-            line = lines[i]
+        while current_line < len(lines) and lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
+            option_key = f"option_{option_count + 1}"
+            option_text = lines[current_line]
+            current_line += 1
             
-            # Check if this line starts an option
-            option_match = re.match(r'^([a-e])[\)\.]\s*(.+)', line, re.IGNORECASE)
-            if option_match:
-                option_letter = option_match.group(1).lower()
-                option_text = option_match.group(2)
-                
-                # Check if next line is continuation (not starting with a new option letter)
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1]
-                    if not re.match(r'^[a-e][\)\.]', next_line, re.IGNORECASE):
-                        option_text += f"<br>{next_line}"
-                        i += 1
-                
-                option_key = f"option_{option_count + 1}"
-                question[option_key] = f"{option_letter.upper()}) {option_text}"
-                option_count += 1
-            i += 1
-        
-        # Find correct answer and explanation
-        correct_answer = None
-        explanation_lines = []
-        
-        for j in range(i, len(lines)):
-            line = lines[j]
+            if (current_line < len(lines) and 
+                not lines[current_line].startswith('Correct') and 
+                not lines[current_line].startswith('ex:') and
+                not lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']):
+                option_text += f"<br>{lines[current_line]}"
+                current_line += 1
             
-            # Check for correct answer patterns
-            if re.search(r'Correct\s*(?:option|answer)?\s*[:-]\s*([a-e])', line, re.IGNORECASE):
-                match = re.search(r'Correct\s*(?:option|answer)?\s*[:-]\s*([a-e])', line, re.IGNORECASE)
-                if match:
-                    correct_answer = match.group(1).lower()
-            
-            # Check for explanation patterns
-            elif re.match(r'^(?:ex|explanation|sol|solution)[:.]?\s*(.+)', line, re.IGNORECASE):
-                match = re.match(r'^(?:ex|explanation|sol|solution)[:.]?\s*(.+)', line, re.IGNORECASE)
-                if match:
-                    explanation_lines.append(match.group(1))
-                    # Check for continuation lines
-                    k = j + 1
-                    while k < len(lines) and not re.match(r'^[a-e][\)\.]', lines[k], re.IGNORECASE) and not re.search(r'Correct', lines[k], re.IGNORECASE):
-                        explanation_lines.append(lines[k])
-                        k += 1
-                    break
-            elif j == len(lines) - 1 and not correct_answer and line and len(line) == 1 and line.lower() in 'abcde':
-                # Sometimes the answer is just a single letter on its own line
-                correct_answer = line.lower()
+            question[option_key] = option_text
+            option_count += 1
         
-        # Set the answer (convert a->1, b->2, etc.)
-        if correct_answer:
-            answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
-            question["answer"] = answer_map.get(correct_answer, '1')
+        while current_line < len(lines) and lines[current_line].startswith('Correct'):
+            if ':-' in lines[current_line]:
+                ans = lines[current_line].split(':-')[1].strip()
+                answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
+                question["answer"] = answer_map.get(ans.lower(), '1')
+            current_line += 1
         
-        # Set explanation
-        if explanation_lines:
-            question["solution_text"] = '<br>'.join(explanation_lines)
+        solution_lines = []
+        while current_line < len(lines) and lines[current_line].startswith('ex:'):
+            solution_lines.append(lines[current_line][3:].strip())
+            current_line += 1
         
-        # Add metadata
-        question["correct_score"] = "3"  # Default, will be overridden
-        question["negative_score"] = "1"  # Default, will be overridden
+        question["solution_text"] = '<br>'.join(solution_lines)
+        
+        question["correct_score"] = "3"
+        question["negative_score"] = "1"
         question["deleted"] = "0"
         question["difficulty_level"] = "0"
         question["option_image_1"] = question["option_image_2"] = question["option_image_3"] = ""
@@ -240,7 +381,6 @@ def parse_txt_file(content):
 def generate_html_quiz(quiz_data):
     """Generate HTML quiz from the parsed data"""
     
-    # Read template HTML
     template = """<!doctype html>
 <html lang="en">
 <head>
@@ -1187,12 +1327,17 @@ function submitQuiz(){{
   const timeTakenSeconds = TOTAL_TIME_SECONDS - seconds;
 
   let correct = 0, wrong = 0, totalMarks = 0;
+  let attemptedCount = 0;
+  
   QUESTIONS.forEach((q, i) => {{
     const qid = q.id ?? i;
     const ans = answers[qid];
+    if (ans) attemptedCount++;
+    
     const isCorrect = ans && String(ans) === String(q.answer);
     if(isCorrect) correct++;
     else if(ans) wrong++;
+    
     const cs = Number(q.correct_score ?? 1);
     const ns = Number(q.negative_score ?? 0);
     if(isCorrect) totalMarks += cs;
@@ -1250,9 +1395,7 @@ function submitQuiz(){{
     }});
     const score = isCorrect ? `<span style="color:var(--success)">+${{cs}}</span>` : (ans ? `<span style="color:var(--danger)">-${{ns}}</span>` : `<span style="color:var(--muted)">0</span>`);
     reviewHTML += `<div style="margin-top:8px"><strong>Score:</strong> ${{score}}</div>`;
-    if(q.solution_text){{
-      reviewHTML += `<div class="explanation" style="display:block;margin-top:8px"><strong>Explanation:</strong> ${{q.solution_text}}</div>`;
-    }}
+    if(q.solution_text) reviewHTML += `<div class="explanation" style="display:block;margin-top:8px"><strong>Explanation:</strong> ${{q.solution_text}}</div>`;
     reviewHTML += `</div>`;
   }});
 
@@ -1600,18 +1743,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity()
     await update.message.reply_text(
         "📚 *Quiz Generator Bot*\n\n"
-        "Send me a TXT file with questions in this format:\n\n"
-        "1. Question in English\n"
-        "   Question in Hindi\n"
-        "a) Option 1 English\n"
-        "   Option 1 Hindi\n"
-        "b) Option 2 English\n"
-        "   Option 2 Hindi\n"
-        "Correct option:-a\n"
-        "ex: Explanation text... (optional)\n\n"
+        "Send me a TXT file with questions in any format. I'll convert it to CHSL format automatically!\n\n"
         "**Commands:**\n"
         "/start - Show this message\n"
         "/help - Show help\n"
+        "/format - Show supported TXT formats\n"
         "/wake - Keep the bot awake\n"
         "/status - Check bot status\n"
         "/cancel - Cancel current operation",
@@ -1639,18 +1775,38 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_content = await file.download_as_bytearray()
         content = file_content.decode('utf-8')
         
+        # Auto-detect and convert format if needed
+        converted_content, was_converted = detect_and_format_txt(content)
+        
+        if was_converted:
+            await update.message.reply_text("🔄 Detected non-standard format. Converting to CHSL format...")
+            content = converted_content
+        
         # Parse questions
         questions = parse_txt_file(content)
         
         if not questions:
-            await update.message.reply_text("❌ Could not parse any questions from the file. Please check the format.")
+            await update.message.reply_text(
+                "❌ Could not parse any questions from the file.\n\n"
+                "Please ensure your file follows this format:\n"
+                "1. Question in English\n"
+                "   Question in Hindi (optional)\n"
+                "a) Option 1 English\n"
+                "   Option 1 Hindi (optional)\n"
+                "b) Option 2 English\n"
+                "   Option 2 Hindi (optional)\n"
+                "Correct option:-a\n"
+                "ex: Explanation text..."
+            )
             return GETTING_FILE
         
         # Store in context
         context.user_data["questions"] = questions
         context.user_data["file_name"] = document.file_name
+        context.user_data["was_converted"] = was_converted
         
-        await update.message.reply_text(f"✅ Parsed {len(questions)} questions successfully!\n\nNow enter the quiz name:")
+        conversion_msg = " (converted from original format)" if was_converted else ""
+        await update.message.reply_text(f"✅ Parsed {len(questions)} questions successfully!{conversion_msg}\n\nNow enter the quiz name:")
         return GETTING_QUIZ_NAME
         
     except Exception as e:
@@ -1850,7 +2006,7 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Save HTML file
         safe_name = re.sub(r'[^\w\s-]', '', context.user_data['name'])
         safe_name = re.sub(r'[-\s]+', '_', safe_name)
-        html_file = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        html_file = f"{safe_name}.html"
         
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_content)
@@ -1911,39 +2067,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *Commands:*
 /start - Start creating a new quiz
 /help - Show this help message
+/format - Show supported TXT file formats
 /wake - Keep the bot awake
 /status - Check bot status
 /cancel - Cancel current operation
 
-*Supported File Formats:*
-Your TXT file can have different formats:
-
-**Format 1:**
-1. Question text in English
-   Question in Hindi
-a) Option 1 English
-   Option 1 Hindi
-b) Option 2 English
-   Option 2 Hindi
-Correct option:-a
-ex: Explanation text... (optional)
-
-**Format 2:**
-1) Question text in English
-A. Option 1 English
-B. Option 2 English
-Answer: A
-
-**Format 3:**
-Question 1: What is...?
-(a) Option 1
-(b) Option 2
-Correct Answer: a
-Explanation: Optional...
+*File Format:*
+The bot supports multiple TXT file formats and will automatically convert them.
+Use /format to see examples of supported formats.
 
 *Features:*
-• Supports multiple TXT file formats
-• Explanation is optional
 • Interactive quiz interface
 • Timer with countdown
 • Test/Quiz mode toggle
@@ -1952,11 +2085,30 @@ Explanation: Optional...
 • Firebase integration
 • Mobile responsive design
 • Hindi/English bilingual support
+• Auto-format conversion for TXT files
 
 *No Sleep System:* 
 This bot has an integrated keep-alive system that prevents it from sleeping on platforms like Render.
 """
     await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def format_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show format help"""
+    update_activity()
+    
+    format_example = """📝 *Supported TXT File Formats*
+
+*Preferred CHSL Format:*
+The bot will automatically detect and convert these formats.
+
+*Important Notes:*
+• Questions should be numbered (1., Q1, etc.)
+• Options should be labeled (a), b), A., 1., etc.)
+• Correct answer should be indicated
+• Empty lines between questions help with parsing
+"""
+    
+    await update.message.reply_text(format_example, parse_mode="Markdown")
 
 async def wake_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manual wake command"""
@@ -1978,6 +2130,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*Commands:*\n"
         f"/start - Create new quiz\n"
         f"/help - Show help\n"
+        f"/format - Show file formats\n"
         f"/wake - Force wake-up\n"
         f"/status - This status"
     )
@@ -2058,6 +2211,7 @@ def main():
     # Add handlers
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("format", format_help))
     application.add_handler(CommandHandler("wake", wake_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_error_handler(error_handler)
