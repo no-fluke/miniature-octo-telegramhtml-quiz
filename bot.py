@@ -110,15 +110,22 @@ def update_activity():
     last_activity = time.time()
 
 def parse_txt_file(content):
-    """Parse the TXT file format and extract questions"""
+    """Parse the TXT file format and extract questions - More robust version"""
     questions = []
     
-    # Split by double newlines (question blocks)
-    blocks = re.split(r'\n\s*\n', content.strip())
+    # Remove any extra whitespace
+    content = content.strip()
     
-    for block in blocks:
-        lines = [line.strip() for line in block.strip().split('\n') if line.strip()]
-        if len(lines) < 7:  # Minimum lines for a question
+    # Split by question number pattern (e.g., "1.", "2.", "3.", etc.)
+    # This regex looks for numbers followed by a dot at the start of a line
+    question_blocks = re.split(r'\n(?=\d+\.)', content)
+    
+    # Remove any empty blocks
+    question_blocks = [block.strip() for block in question_blocks if block.strip()]
+    
+    for block in question_blocks:
+        lines = [line.strip() for line in block.split('\n') if line.strip()]
+        if len(lines) < 3:  # Minimum lines: question, at least 2 options, and answer
             continue
             
         question = {
@@ -128,58 +135,94 @@ def parse_txt_file(content):
             "solution_text": ""
         }
         
-        current_line = 0
+        # Find the start of options (lines starting with a), b), c), d), e))
+        option_start_index = -1
+        for i, line in enumerate(lines):
+            if re.match(r'^[a-e]\)', line, re.IGNORECASE):
+                option_start_index = i
+                break
         
-        # Extract question (first line with number)
-        question_lines = []
-        while current_line < len(lines) and not lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
-            # Remove question number if present
-            line_text = lines[current_line]
-            if re.match(r'^\d+\.\s*', line_text):
-                line_text = re.sub(r'^\d+\.\s*', '', line_text)
-            question_lines.append(line_text)
-            current_line += 1
+        if option_start_index == -1:
+            # Try another pattern: lines starting with lowercase letters and parenthesis
+            for i, line in enumerate(lines):
+                if re.match(r'^[a-e]\.', line, re.IGNORECASE):
+                    option_start_index = i
+                    break
         
+        if option_start_index == -1:
+            continue  # Skip if no options found
+        
+        # Extract question (all lines before options)
+        question_lines = lines[:option_start_index]
+        # Remove question number from first line
+        if question_lines and re.match(r'^\d+\.', question_lines[0]):
+            question_lines[0] = re.sub(r'^\d+\.\s*', '', question_lines[0])
         question["question"] = '<br>'.join(question_lines)
         
-        # Extract options (4-5 options)
+        # Extract options
+        i = option_start_index
         option_count = 0
-        while current_line < len(lines) and lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']:
-            option_key = f"option_{option_count + 1}"
-            option_text = lines[current_line]
-            current_line += 1
+        while i < len(lines) and option_count < 5:
+            line = lines[i]
             
-            # Add Hindi line if exists (next line doesn't start with option or Correct/ex)
-            if (current_line < len(lines) and 
-                not lines[current_line].startswith('Correct') and 
-                not lines[current_line].startswith('ex:') and
-                not lines[current_line][:2] in ['a)', 'b)', 'c)', 'd)', 'e)']):
-                option_text += f"<br>{lines[current_line]}"
-                current_line += 1
+            # Check if this line starts an option
+            option_match = re.match(r'^([a-e])[\)\.]\s*(.+)', line, re.IGNORECASE)
+            if option_match:
+                option_letter = option_match.group(1).lower()
+                option_text = option_match.group(2)
+                
+                # Check if next line is continuation (not starting with a new option letter)
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    if not re.match(r'^[a-e][\)\.]', next_line, re.IGNORECASE):
+                        option_text += f"<br>{next_line}"
+                        i += 1
+                
+                option_key = f"option_{option_count + 1}"
+                question[option_key] = f"{option_letter.upper()}) {option_text}"
+                option_count += 1
+            i += 1
+        
+        # Find correct answer and explanation
+        correct_answer = None
+        explanation_lines = []
+        
+        for j in range(i, len(lines)):
+            line = lines[j]
             
-            question[option_key] = option_text
-            option_count += 1
+            # Check for correct answer patterns
+            if re.search(r'Correct\s*(?:option|answer)?\s*[:-]\s*([a-e])', line, re.IGNORECASE):
+                match = re.search(r'Correct\s*(?:option|answer)?\s*[:-]\s*([a-e])', line, re.IGNORECASE)
+                if match:
+                    correct_answer = match.group(1).lower()
+            
+            # Check for explanation patterns
+            elif re.match(r'^(?:ex|explanation|sol|solution)[:.]?\s*(.+)', line, re.IGNORECASE):
+                match = re.match(r'^(?:ex|explanation|sol|solution)[:.]?\s*(.+)', line, re.IGNORECASE)
+                if match:
+                    explanation_lines.append(match.group(1))
+                    # Check for continuation lines
+                    k = j + 1
+                    while k < len(lines) and not re.match(r'^[a-e][\)\.]', lines[k], re.IGNORECASE) and not re.search(r'Correct', lines[k], re.IGNORECASE):
+                        explanation_lines.append(lines[k])
+                        k += 1
+                    break
+            elif j == len(lines) - 1 and not correct_answer and line and len(line) == 1 and line.lower() in 'abcde':
+                # Sometimes the answer is just a single letter on its own line
+                correct_answer = line.lower()
         
-        # Extract correct answer
-        while current_line < len(lines) and lines[current_line].startswith('Correct'):
-            if ':-' in lines[current_line]:
-                ans = lines[current_line].split(':-')[1].strip()
-                # Map a->1, b->2, etc.
-                answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
-                question["answer"] = answer_map.get(ans.lower(), '1')
-            current_line += 1
+        # Set the answer (convert a->1, b->2, etc.)
+        if correct_answer:
+            answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
+            question["answer"] = answer_map.get(correct_answer, '1')
         
-        # Extract explanation
-        solution_lines = []
-        while current_line < len(lines) and lines[current_line].startswith('ex:'):
-            solution_lines.append(lines[current_line][3:].strip())
-            current_line += 1
-        
-        question["solution_text"] = '<br>'.join(solution_lines)
+        # Set explanation
+        if explanation_lines:
+            question["solution_text"] = '<br>'.join(explanation_lines)
         
         # Add metadata
-        question["correct_score"] = "3"
-        question["negative_score"] = "1"
+        question["correct_score"] = "3"  # Default, will be overridden
+        question["negative_score"] = "1"  # Default, will be overridden
         question["deleted"] = "0"
         question["difficulty_level"] = "0"
         question["option_image_1"] = question["option_image_2"] = question["option_image_3"] = ""
@@ -1144,17 +1187,12 @@ function submitQuiz(){{
   const timeTakenSeconds = TOTAL_TIME_SECONDS - seconds;
 
   let correct = 0, wrong = 0, totalMarks = 0;
-  let attemptedCount = 0;
-  
   QUESTIONS.forEach((q, i) => {{
     const qid = q.id ?? i;
     const ans = answers[qid];
-    if (ans) attemptedCount++;
-    
     const isCorrect = ans && String(ans) === String(q.answer);
     if(isCorrect) correct++;
     else if(ans) wrong++;
-    
     const cs = Number(q.correct_score ?? 1);
     const ns = Number(q.negative_score ?? 0);
     if(isCorrect) totalMarks += cs;
@@ -1212,7 +1250,9 @@ function submitQuiz(){{
     }});
     const score = isCorrect ? `<span style="color:var(--success)">+${{cs}}</span>` : (ans ? `<span style="color:var(--danger)">-${{ns}}</span>` : `<span style="color:var(--muted)">0</span>`);
     reviewHTML += `<div style="margin-top:8px"><strong>Score:</strong> ${{score}}</div>`;
-    if(q.solution_text) reviewHTML += `<div class="explanation" style="display:block;margin-top:8px"><strong>Explanation:</strong> ${{q.solution_text}}</div>`;
+    if(q.solution_text){{
+      reviewHTML += `<div class="explanation" style="display:block;margin-top:8px"><strong>Explanation:</strong> ${{q.solution_text}}</div>`;
+    }}
     reviewHTML += `</div>`;
   }});
 
@@ -1567,12 +1607,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   Option 1 Hindi\n"
         "b) Option 2 English\n"
         "   Option 2 Hindi\n"
-        "c) Option 3 English\n"
-        "   Option 3 Hindi\n"
-        "d) Option 4 English\n"
-        "   Option 4 Hindi\n"
         "Correct option:-a\n"
-        "ex: Explanation text...\n\n"
+        "ex: Explanation text... (optional)\n\n"
         "**Commands:**\n"
         "/start - Show this message\n"
         "/help - Show help\n"
@@ -1814,7 +1850,7 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Save HTML file
         safe_name = re.sub(r'[^\w\s-]', '', context.user_data['name'])
         safe_name = re.sub(r'[-\s]+', '_', safe_name)
-        html_file = f"{safe_name}.html"
+        html_file = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_content)
@@ -1879,9 +1915,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /status - Check bot status
 /cancel - Cancel current operation
 
-*File Format:*
-Your TXT file should have this format:
+*Supported File Formats:*
+Your TXT file can have different formats:
 
+**Format 1:**
 1. Question text in English
    Question in Hindi
 a) Option 1 English
@@ -1889,19 +1926,24 @@ a) Option 1 English
 b) Option 2 English
    Option 2 Hindi
 Correct option:-a
-ex: Explanation text...
+ex: Explanation text... (optional)
 
-*Example:*
-1. What is HTML?
-   HTML क्या है?
-a) Hyper Text Markup Language
-   हाइपर टेक्स्ट मार्कअप लैंग्वेज
-b) High Tech Modern Language
-   हाई टेक मॉडर्न लैंग्वेज
-Correct option:-a
-ex: HTML stands for Hyper Text Markup Language...
+**Format 2:**
+1) Question text in English
+A. Option 1 English
+B. Option 2 English
+Answer: A
+
+**Format 3:**
+Question 1: What is...?
+(a) Option 1
+(b) Option 2
+Correct Answer: a
+Explanation: Optional...
 
 *Features:*
+• Supports multiple TXT file formats
+• Explanation is optional
 • Interactive quiz interface
 • Timer with countdown
 • Test/Quiz mode toggle
