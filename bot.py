@@ -309,7 +309,8 @@ def parse_txt_file(content):
 
 def generate_html_quiz(quiz_data):
     """Generate HTML quiz from the parsed data"""
-  # Read template HTML
+    
+    # Read template HTML
     template = """<!doctype html>
 <html lang="en">
 <head>
@@ -443,7 +444,7 @@ mjx-container {{
 
 /* 🔢 Make MathJax match quiz text font */
 mjx-container {{
-  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif !important;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI",Roboto,sans-serif !important;
   font-size: 1em;
 }}
 
@@ -474,7 +475,8 @@ mjx-container {{
 }}
 
 </style>
-  <!-- 🔢 MathJax Auto-LaTeX (Google Docs like) -->
+
+<!-- 🔢 MathJax Auto-LaTeX (Google Docs like) -->
 <script>
   window.MathJax = {{
     tex: {{
@@ -887,8 +889,576 @@ function init(){{
 
 
   // 🔁 NORMAL QUIZ RESUME FLOW
-  const saved = 
-  document.createElement("div");
+  const saved = localStorage.getItem(QUIZ_STATE_KEY);
+  if (saved) {{
+    const state = JSON.parse(saved);
+    current = state.current ?? 0;
+    answers = state.answers ?? {{}};
+    markedForReview = state.markedForReview ?? {{}};
+    seenQuestions = state.seenQuestions ?? {{}};
+    seconds = state.seconds ?? seconds;
+  }}
+
+  renderQuestion(current);
+  startTimer();
+  attachListeners();
+  buildPalette();
+  highlightPalette();
+  renderMath();
+}}
+
+
+
+
+/* render question */
+function renderQuestion(i){{
+  if (!__QUIZ_OK) return;
+  current = i;
+  const q = QUESTIONS[i];
+  el("qindex").textContent = i+1;
+  el("qtext").innerHTML = q.question || "";
+  normalizeMathForQuiz(el("qtext"));
+  renderMath();
+  el("marking").innerHTML = `Marking: <span style="color:var(--success)">+${{Number(q.correct_score ?? 1)}}</span> / <span style="color:var(--danger)">-${{Number(q.negative_score ?? 0)}}</span>`;
+  const opts = el("options");
+  opts.innerHTML = "";
+  el("explanation").style.display = "none";
+
+  const keys = ["option_1","option_2","option_3","option_4","option_5"];
+  keys.forEach((k, idx) => {{
+    if(!q[k]) return;
+    const div = document.createElement("div");
+    div.className = "opt";
+    div.innerHTML = `
+    <div class="custom-radio" aria-hidden="true"></div>
+    <div class="opt-text" style="flex:1">${{q[k]}}</div>
+    `;
+    opts.appendChild(div);
+
+    // 🔥 NORMALIZE MATH IN OPTION TEXT
+    normalizeMathForQuiz(div.querySelector(".opt-text"));
+
+    div.addEventListener("click", () => selectOption(q, idx+1, div));
+
+    // if previously answered, mark selected
+    const qid = q.id ?? i;
+    if(answers[qid] === String(idx+1)) div.classList.add("selected");
+  }});
+
+  // Mark as seen
+  seenQuestions[i] = true;
+  
+  highlightPalette();
+  renderMath();
+  saveQuizState();
+}}
+
+/* selecting option */
+function selectOption(q, val, div){{
+  const qid = q.id ?? current;
+  answers[qid] = String(val);
+  // Remove from marked for review if answered
+  delete markedForReview[qid];
+  // clear previous selections visually
+  Array.from(el("options").children).forEach(o => o.className = "opt");
+  div.classList.add("selected");
+  // immediate feedback in quiz mode
+  if(isQuiz) showFeedback(q, val);
+  highlightPalette();
+  saveQuizState();
+}}
+
+/* show correct/wrong coloring and explanation */
+function showFeedback(q, val){{
+  const opts = Array.from(el("options").children);
+  opts.forEach((o, idx) => {{
+    o.classList.remove("correct","wrong");
+    const idx1 = idx+1;
+    if(String(q.answer) === String(idx1)){{
+      o.classList.add("correct");
+    }} else if(String(val) === String(idx1)){{
+      o.classList.add("wrong");
+    }}
+  }});
+  if(q.solution_text){{
+    el("explanation").innerHTML = `<strong>Explanation:</strong> ${{q.solution_text}}`;
+    el("explanation").style.display = "block";
+    normalizeMathForQuiz(el("explanation"));
+    renderMath();
+  }}
+}}
+
+function loadPreviousAttempts(quizId, deviceId) {{
+  const box = document.getElementById("previousAttempts");
+  box.innerHTML = "";
+  normalizeMathForQuiz(box);
+  renderMath();
+  box.style.display = "block";
+
+  document.getElementById("results").style.display = "none";
+  document.getElementById("attemptReplay").style.display = "none";
+
+  db.ref("attempt_history/" + quizId + "/" + deviceId)
+    .once("value")
+    .then(snapshot => {{
+      const data = snapshot.val();
+      if (!data) {{
+        box.innerHTML = "<p>No previous attempts found.</p>";
+        return;
+      }}
+      ALL_ATTEMPTS_CACHE = data;
+
+      const attempts = Object.values(data)
+        .sort((a, b) => b.submittedAt - a.submittedAt);
+
+      let html = `<div class="card"><h3 style="color:var(--accent)">Previous Attempts</h3>`;
+
+      attempts.forEach((a, i) => {{
+        html += `
+          <button class="btn-ghost" onclick="showAttempt('${{a.submittedAt}}')">
+            Attempt ${{attempts.length - i}} — ${{a.score}}
+          </button>
+        `;
+      }});
+
+      html += "</div>";
+      box.innerHTML = html;
+      normalizeMathForQuiz(box);
+      renderMath();
+    }});
+}}
+
+function showAttempt(submittedAt) {{
+  const attempt = ALL_ATTEMPTS_CACHE[submittedAt];
+  if (!attempt) return;
+
+  const box = document.getElementById("attemptReplay");
+  box.innerHTML = "";
+  normalizeMathForQuiz(box);
+  renderMath();
+  box.style.display = "block";
+
+  document.getElementById("previousAttempts").style.display = "none";
+  document.getElementById("results").style.display = "none";
+
+  let html = `
+    <div class="card">
+      <h3 style="color:var(--accent)">Attempt Review</h3>
+      <div class="stats">
+        <div class="stat"><h4>Score</h4><p>${{attempt.score}}</p></div>
+        <div class="stat"><h4>Correct</h4><p>${{attempt.correct}}</p></div>
+        <div class="stat"><h4>Wrong</h4><p>${{attempt.wrong}}</p></div>
+        <div class="stat"><h4>Time Taken</h4><p>${{fmt(attempt.timeTaken)}}</p></div>
+        <div class="stat"><h4>Rank</h4><p id="live-rank">...</p></div>
+        <div class="stat"><h4>Percentile</h4><p id="live-percentile">...</p></div>
+      </div>
+    </div>
+  `;
+
+  attempt.answers.forEach((q, i) => {{
+    html += `<div class="card">
+      <div style="font-weight:600;margin-bottom:6px">
+        Q${{i + 1}}: ${{q.question}}
+      </div>`;
+
+    q.options.forEach((opt, idx) => {{
+      const id = String(idx + 1);
+      let style = "padding:8px;border-radius:6px;margin:6px 0;border:1px solid #ddd;";
+      if (id === q.correctAnswer) style += "border:2px solid var(--success);background:#eaf7f0;";
+      else if (id === q.userAnswer) style += "border:2px solid var(--danger);background:#fdecec;";
+      html += `<div style="${{style}}">${{opt}}</div>`;
+    }});
+
+    html += "</div>";
+  }});
+
+  box.innerHTML = html;
+  normalizeMathForQuiz(box);
+  renderMath();
+  getLiveRankForAttempt("{quiz_name}", attempt)
+  .then(data => {{
+    document.getElementById("live-rank").textContent =
+      `${{data.rank}} / ${{data.total}}`;
+    document.getElementById("live-percentile").textContent =
+      `${{data.percentile}}%`;
+  }});
+
+}}
+
+
+
+/* Submit flow */
+function submitQuiz(){{
+  // stop timer
+  if(timerInterval) clearInterval(timerInterval);
+  const timeTakenSeconds = TOTAL_TIME_SECONDS - seconds;
+
+  let correct = 0, wrong = 0, totalMarks = 0;
+  let attemptedCount = 0;
+  
+  QUESTIONS.forEach((q, i) => {{
+    const qid = q.id ?? i;
+    const ans = answers[qid];
+    if (ans) attemptedCount++;
+    
+    const isCorrect = ans && String(ans) === String(q.answer);
+    if(isCorrect) correct++;
+    else if(ans) wrong++;
+    
+    const cs = Number(q.correct_score ?? 1);
+    const ns = Number(q.negative_score ?? 0);
+    if(isCorrect) totalMarks += cs;
+    else if(ans) totalMarks -= ns;
+  }});
+  
+  // ✅ STEP 1: calculate maximum total marks
+  let maxTotalMarks = 0;
+  QUESTIONS.forEach(q => {{
+    maxTotalMarks += Number(q.correct_score ?? 1);
+  }});
+
+  const attempted = Object.keys(answers).length;
+  const unattempted = QUESTIONS.length - attempted;
+  const accuracy = attempted ? ((correct/attempted) * 100).toFixed(1) : "0.0";
+
+
+  // build review HTML
+  let reviewHTML = `<div class="card"><h3 style="color:var(--accent);margin:0 0 10px">Results Summary</h3>
+    <div class="stats">
+      <div class="stat"><h4>Correct</h4><p>${{correct}}</p></div>
+      <div class="stat"><h4>Wrong</h4><p>${{wrong}}</p></div>
+      <div class="stat"><h4>Unattempted</h4><p>${{unattempted}}</p></div>
+      <div class="stat"><h4>Accuracy</h4><p>${{accuracy}}%</p></div>
+      <div class="stat"><h4>Total Marks</h4><p>${{totalMarks}} / ${{maxTotalMarks}}</p></div>
+      <div class="stat"><h4>Time Taken</h4><p>${{fmt(timeTakenSeconds)}}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+      <button class="btn-ghost" onclick="filterResults('all')">ALL</button>
+      <button class="btn-ghost" onclick="filterResults('correct')">CORRECT</button>
+      <button class="btn-ghost" onclick="filterResults('wrong')">WRONG</button>
+      <button class="btn-ghost" onclick="filterResults('unattempted')">UNATTEMPTED</button>
+    </div>
+    
+    <div class="download-buttons">
+      <button class="btn-success" onclick="downloadPDF()">Download PDF with Explanations</button>
+      <button class="btn-info" onclick="downloadResults()">Download HTML Results</button>
+    </div>
+
+</div></div>`;
+
+  QUESTIONS.forEach((q,i)=>{{
+    const qid = q.id ?? i;
+    const ans = answers[qid];
+    const isCorrect = ans && String(ans) === String(q.answer);
+    const cs = Number(q.correct_score ?? 1);
+    const ns = Number(q.negative_score ?? 0);
+
+    const status = !ans ? "unattempted" : (isCorrect ? "correct" : "wrong");
+    reviewHTML += `<div class="card result-q" data-status="${{status}}"><div style="font-weight:700;margin-bottom:8px">Q${{i+1}}: ${{q.question}}</div>`;
+    ["option_1","option_2","option_3","option_4","option_5"].forEach((k,j)=>{{
+      if(!q[k]) return;
+      const idx = j+1;
+      const isOptCorrect = String(idx) === String(q.answer);
+      const isUser = ans && String(idx) === String(ans);
+      let style = "padding:8px 10px;margin:6px 0;border-radius:8px;";
+      if(isOptCorrect) style += "border:2px solid var(--success);background:rgba(31,158,90,0.12);";
+      else if(isUser && !isOptCorrect) style += "border:2px solid var(--danger);background:rgba(200,45,63,0.12);";
+      else style += "border:1px solid #eee;background:#fafbfd;";
+      reviewHTML += `<div style="${{style}}">${{q[k]}}</div>`;
+    }});
+    const score = isCorrect ? `<span style="color:var(--success)">+${{cs}}</span>` : (ans ? `<span style="color:var(--danger)">-${{ns}}</span>` : `<span style="color:var(--muted)">0</span>`);
+    reviewHTML += `<div style="margin-top:8px"><strong>Score:</strong> ${{score}}</div>`;
+    if(q.solution_text) reviewHTML += `<div class="explanation" style="display:block;margin-top:8px"><strong>Explanation:</strong> ${{q.solution_text}}</div>`;
+    reviewHTML += `</div>`;
+  }});
+
+  el("results").innerHTML = reviewHTML;
+  normalizeMathForQuiz(el("results"));
+  renderMath();
+  el("results").style.display = "block";
+
+  el("quizCard").style.display = "none";
+  // hide bottom nav
+  el("floatBar").style.display = "none";
+  LAST_RESULT_HTML = reviewHTML; // ✅ FIX: store latest result immediately
+
+
+  document.getElementById("mainHeader")?.style.setProperty("display", "block");
+
+
+
+
+const timeTaken = timeTakenSeconds;
+
+const firebasePayload = {{
+  name: "Anonymous",
+  score: totalMarks,
+  total: maxTotalMarks,
+  correct,
+  wrong,
+  unattempted,
+  timeTaken,
+  quizId: "{quiz_name}",
+  deviceId: DEVICE_ID,
+  submittedAt: Date.now(),
+  answers: QUESTIONS.map((q, i) => {{
+    const qid = q.id ?? i;
+    return {{
+      question: q.question,
+      options: [
+        q.option_1,
+        q.option_2,
+        q.option_3,
+        q.option_4,
+        q.option_5
+      ].filter(Boolean),
+      correctAnswer: String(q.answer),
+      userAnswer: answers[qid] ?? null
+    }};
+  }})
+}};
+
+
+// 🔥 ADMIN DATA (first attempt only)
+saveResultFirebase(firebasePayload)
+  .finally(() => {{
+    saveAttemptHistory(firebasePayload);
+
+    // 🔥 RESULT PAGE (always show rank, even on reattempt)
+    getRankAndPercentile("{quiz_name}", totalMarks, timeTaken, firebasePayload.submittedAt)
+      .then(data => {{
+
+        firebasePayload.rank = data.rank;
+        firebasePayload.percentile = data.percentile;
+
+
+
+        // 🔥 UPDATE THIS ATTEMPT WITH RANK & PERCENTILE
+        db.ref(
+        "attempt_history/" +
+        firebasePayload.quizId + "/" +
+        firebasePayload.deviceId + "/" +
+        firebasePayload.submittedAt
+        ).update({{
+        rank: data.rank,
+        percentile: data.percentile
+        }});
+
+        const rankHTML = `
+          <div class="stat">
+            <h4>Rank</h4>
+            <p>${{data.rank}} / ${{data.total}}</p>
+          </div>
+          <div class="stat">
+            <h4>Percentile</h4>
+            <p>${{data.percentile}}%</p>
+          </div>
+        `;
+
+        document
+          .querySelector("#results .stats")
+          ?.insertAdjacentHTML("beforeend", rankHTML);
+          setTimeout(() => {{
+            const finalResultHTML = document.getElementById("results").innerHTML;
+            const headerHTML = document.getElementById("headerControls").innerHTML;
+
+            LAST_RESULT_HTML = finalResultHTML;
+
+            // 🔐 SAVE COMPLETE RESULT + HEADER STATE
+            localStorage.setItem(QUIZ_RESULT_KEY, JSON.stringify({{
+              submitted: true,
+              resultHTML: finalResultHTML,
+              headerHTML: headerHTML
+            }}));
+          }}, 0);
+      }});
+  }});
+
+
+  // replace header controls with results controls (Re-Attempt, Download, Print)
+  const header = el("headerControls");
+  header.innerHTML = "";
+  const left = document.createElement("div");
+  left.style.display = "flex";
+  left.style.alignItems = "center";
+  left.style.gap = "10px";
+  const title = document.createElement("h1");
+  title.textContent = QUIZ_TITLE;
+  left.appendChild(title);
+
+  const right = document.createElement("div");
+  right.style.display = "flex";
+  right.style.alignItems = "center";
+  right.style.gap = "10px";
+
+  const retry = document.createElement("button");
+  retry.className = "btn";
+  retry.textContent = "Re-Attempt";
+  retry.onclick = ()=> {{
+    localStorage.removeItem(QUIZ_RESULT_KEY);
+    localStorage.removeItem(QUIZ_STATE_KEY);
+    location.reload();
+  }};
+
+  right.appendChild(retry);
+  const prevBtn = document.createElement("button");
+  prevBtn.className = "btn-ghost";
+  prevBtn.textContent = "Previous Attempts";
+  prevBtn.onclick = () => {{
+    const res = document.getElementById("results");
+    res.innerHTML = "";                    // clear latest result
+    res.style.display = "block";
+    loadPreviousAttempts("{quiz_name}", DEVICE_ID);
+  }};
+
+
+  const backBtn = document.createElement("button");
+  backBtn.className = "btn-ghost";
+  backBtn.textContent = "Back to Latest Result";
+  backBtn.onclick = () => {{
+    document.getElementById("results").innerHTML = LAST_RESULT_HTML;
+    document.getElementById("results").style.display = "block";
+  }};
+
+
+  right.appendChild(prevBtn);
+  right.appendChild(backBtn);
+
+  // Download & Print intentionally disabled
+  header.appendChild(left);
+  header.appendChild(right);
+}}
+
+/* Download current results page as .html named after quiz title */
+function downloadResults(){{
+  const head = document.head.outerHTML;
+  const resultsHtml = el("results").outerHTML;
+  const pageHtml = `<!doctype html><html>${{head}}<body><div style="padding:20px;max-width:1000px;margin:auto">${{resultsHtml}}</div></body></html>`;
+  const blob = new Blob([pageHtml], {{type:"text/html"}});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safe = String(QUIZ_TITLE).replace(/[^a-z0-9]/gi,"_");
+  a.href = url;
+  a.download = `${{safe}}_results.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}}
+
+/* Download results as PDF */
+function downloadPDF() {{
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF('p', 'mm', 'a4');
+  
+  // Capture the results div
+  html2canvas(document.getElementById('results'), {{
+    scale: 2,
+    useCORS: true,
+    logging: false,
+    backgroundColor: '#ffffff'
+  }}).then(canvas => {{
+    const imgData = canvas.toDataURL('image/png');
+    const imgWidth = 190; // A4 width in mm
+    const pageHeight = 280; // A4 height in mm
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    
+    let heightLeft = imgHeight;
+    let position = 10;
+    
+    doc.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    
+    // Add new pages if content is too long
+    while (heightLeft >= 0) {{
+      position = heightLeft - imgHeight;
+      doc.addPage();
+      doc.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }}
+    
+    const safe = String(QUIZ_TITLE).replace(/[^a-z0-9]/gi,"_");
+    doc.save(`${{safe}}_results.pdf`);
+  }});
+}}
+
+/* attach DOM listeners */
+function attachListeners(){{
+  el("prevBtn").addEventListener("click", ()=> {{ if(current > 0) renderQuestion(current-1); }});
+  el("clearBtn").addEventListener("click", ()=> {{ 
+    const qid = QUESTIONS[current].id ?? current;
+    delete answers[qid];
+    delete markedForReview[qid];
+    renderQuestion(current); 
+    highlightPalette(); 
+  }});
+  
+  el("saveNextBtn").addEventListener("click", ()=> {{ 
+    if(current < QUESTIONS.length-1) {{
+      renderQuestion(current+1);
+    }}
+  }});
+  
+  el("markReviewBtn").addEventListener("click", ()=> {{ 
+    const qid = QUESTIONS[current].id ?? current;
+    if (markedForReview[qid]) {{
+      delete markedForReview[qid];
+    }} else {{
+      markedForReview[qid] = true;
+    }}
+    highlightPalette();
+    saveQuizState();
+  }});
+
+  el("paletteBtn").addEventListener("click", (e) => {{
+    e.stopPropagation();
+    togglePalette();
+  }});
+
+  el("submitBtn").addEventListener("click", ()=>{{
+    const attempted = Object.keys(answers).length;
+    el("submitMsg").textContent = `You attempted ${{attempted}} of ${{QUESTIONS.length}}. Submit?`;
+    el("submitModal").style.display = "flex";
+  }});
+
+  el("cancelSubmit").addEventListener("click", ()=> el("submitModal").style.display = "none");
+  el("confirmSubmit").addEventListener("click", ()=> {{ el("submitModal").style.display = "none"; submitQuiz(); }});
+
+  el("modeToggle").addEventListener("click", ()=> {{
+    el("modeToggle").classList.toggle("active");
+    isQuiz = el("modeToggle").classList.contains("active");
+    // re-render the current question so immediate behavior toggles
+    renderQuestion(current);
+  }});
+
+  // close palette when clicking outside
+  document.addEventListener("click", (ev) => {{
+    const pal = el("palette");
+    if(!pal) return;
+    if(pal.style.display === "flex"){{
+      const viewBtn = el("paletteBtn");
+      if(ev.target !== pal && !pal.contains(ev.target) && ev.target !== viewBtn && !viewBtn.contains(ev.target)){{
+        pal.style.display = "none";
+      }}
+    }}
+  }});
+}}
+
+/* Build palette buttons + summary */
+function buildPalette(){{
+  const pal = el("palette");
+  pal.innerHTML = "";
+  for(let i=0;i<QUESTIONS.length;i++){{
+    const b = document.createElement("button");
+    b.className = "qbtn";
+    b.textContent = i+1;
+    b.addEventListener("click", (e)=>{{
+      e.stopPropagation();
+      renderQuestion(i);
+      pal.style.display = "none";
+    }});
+    pal.appendChild(b);
+  }}
+  const summary = document.createElement("div");
   summary.id = "palette-summary";
   summary.style.marginTop = "8px";
   pal.appendChild(summary);
@@ -1108,7 +1678,117 @@ async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["time"] = query.data
     
     keyboard = [
-        [InlineKeyboardButton("1", callback_data="1"),        negative = float(update.message.text)
+        [InlineKeyboardButton("1", callback_data="1"),
+         InlineKeyboardButton("2", callback_data="2"),
+         InlineKeyboardButton("3", callback_data="3"),
+         InlineKeyboardButton("4", callback_data="4")],
+        [InlineKeyboardButton("Custom", callback_data="custom_marks")]
+    ]
+    
+    await query.edit_message_text(
+        "✍️ Select marks per question (or Custom):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return GETTING_MARKS
+
+async def get_time_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle custom time input"""
+    update_activity()
+    try:
+        time_minutes = int(update.message.text)
+        if time_minutes <= 0:
+            raise ValueError
+        context.user_data["time"] = str(time_minutes)
+    except:
+        await update.message.reply_text("Please enter a valid number (minutes):")
+        return GETTING_TIME
+    
+    keyboard = [
+        [InlineKeyboardButton("1", callback_data="1"),
+         InlineKeyboardButton("2", callback_data="2"),
+         InlineKeyboardButton("3", callback_data="3"),
+         InlineKeyboardButton("4", callback_data="4")],
+        [InlineKeyboardButton("Custom", callback_data="custom_marks")]
+    ]
+    
+    await update.message.reply_text(
+        "✍️ Select marks per question (or Custom):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return GETTING_MARKS
+
+async def get_marks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle marks selection"""
+    update_activity()
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "custom_marks":
+        await query.edit_message_text("Enter marks per question:")
+        return GETTING_MARKS
+    
+    context.user_data["marks"] = query.data
+    
+    keyboard = [
+        [InlineKeyboardButton("0 (No negative)", callback_data="0"),
+         InlineKeyboardButton("0.25", callback_data="0.25"),
+         InlineKeyboardButton("0.5", callback_data="0.5"),
+         InlineKeyboardButton("1", callback_data="1")],
+        [InlineKeyboardButton("Custom", callback_data="custom_negative")]
+    ]
+    
+    await query.edit_message_text(
+        "⚠️ Select negative marking per wrong answer (or Custom):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return GETTING_NEGATIVE
+
+async def get_marks_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle custom marks input"""
+    update_activity()
+    try:
+        marks = float(update.message.text)
+        if marks <= 0:
+            raise ValueError
+        context.user_data["marks"] = str(marks)
+    except:
+        await update.message.reply_text("Please enter a valid number for marks:")
+        return GETTING_MARKS
+    
+    keyboard = [
+        [InlineKeyboardButton("0 (No negative)", callback_data="0"),
+         InlineKeyboardButton("0.25", callback_data="0.25"),
+         InlineKeyboardButton("0.5", callback_data="0.5"),
+         InlineKeyboardButton("1", callback_data="1")],
+        [InlineKeyboardButton("Custom", callback_data="custom_negative")]
+    ]
+    
+    await update.message.reply_text(
+        "⚠️ Select negative marking per wrong answer (or Custom):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return GETTING_NEGATIVE
+
+async def get_negative(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle negative marking selection"""
+    update_activity()
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "custom_negative":
+        await query.edit_message_text("Enter negative marking value:")
+        return GETTING_NEGATIVE
+    
+    context.user_data["negative"] = query.data
+    
+    await query.edit_message_text("🏆 Enter creator name:")
+    return GETTING_CREATOR
+
+async def get_negative_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle custom negative marking input"""
+    update_activity()
+    try:
+        negative = float(update.message.text)
         if negative < 0:
             raise ValueError
         context.user_data["negative"] = str(negative)
@@ -1151,7 +1831,198 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id=progress_msg.message_id,
             text=f"{summary}\n\n🔄 Processing {total_questions} questions..."
         )
-        ~filters.COMMAND, get_creator),
+        
+        # Generate quiz HTML
+        html_content = generate_html_quiz(context.user_data)
+        
+        # Save HTML file
+        safe_name = re.sub(r'[^\w\s-]', '', context.user_data['name'])
+        safe_name = re.sub(r'[-\s]+', '_', safe_name)
+        html_file = f"{safe_name}.html"
+        
+        with open(html_file, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
+        # Update progress
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=progress_msg.message_id,
+            text=f"{summary}\n\n✅ Quiz generated! Sending file..."
+        )
+        
+        # Send HTML file with proper caption format
+        with open(html_file, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=html_file,
+                caption=f"✅ *Quiz Generated Successfully!*\n\n"
+                       f"Download and open in any browser.\n\n"
+                       f"📘 QUIZ ID: {context.user_data['name']}\n"
+                       f"📊 TOTAL QUESTIONS: {total_questions}\n"
+                       f"⏱️ TIME: {context.user_data['time']} Minutes\n"
+                       f"✍️ EACH QUESTION MARK: {context.user_data['marks']}\n"
+                       f"⚠️ NEGATIVE MARKING: {context.user_data['negative']}\n"
+                       f"🏆 CREATED BY: {context.user_data['creator']}\n\n"
+                       f"✨ **New Features:**\n"
+                       f"• PDF Download with explanations\n"
+                       f"• Mark for Review button\n"
+                       f"• Enhanced view palette with colors\n"
+                       f"• Optimized for all devices",
+                parse_mode="Markdown"
+            )
+        
+        # Cleanup
+        os.remove(html_file)
+        if user_id in user_progress:
+            del user_progress[user_id]
+        
+        # Clear user data
+        context.user_data.clear()
+        
+    except Exception as e:
+        logger.error(f"Error generating quiz: {e}")
+        await update.message.reply_text(f"❌ Error generating quiz: {str(e)}")
+        
+        if user_id in user_progress:
+            del user_progress[user_id]
+    
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the conversation"""
+    update_activity()
+    await update.message.reply_text("❌ Operation cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send help message"""
+    update_activity()
+    help_text = """
+📚 *Quiz Generator Bot Help*
+
+*Commands:*
+/start - Start creating a new quiz
+/help - Show this help message
+/wake - Keep the bot awake
+/status - Check bot status
+/cancel - Cancel current operation
+
+*File Format:*
+Your TXT file can be in ANY format! The bot will automatically detect:
+- Questions with numbers (1., Q1, etc.)
+- Options with letters (a), b), etc.)
+- Answers (Answer: a, Correct option:-a, etc.)
+- Explanations (ex: ..., Explanation: ...)
+
+*New Features:*
+• PDF Download with explanations
+• Mark for Review button
+• Enhanced view palette with colors:
+  - Green: Attempted questions
+  - Red: Unattempted but seen questions
+  - Violet: Marked for review
+  - White: Unseen questions
+• Optimized for laptop, tablet, and mobile
+• Rank system works perfectly
+• Save & Next button
+
+*No Sleep System:* 
+This bot has an integrated keep-alive system that prevents it from sleeping on platforms like Render.
+"""
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def wake_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual wake command"""
+    update_activity()
+    keep_alive_ping()
+    await update.message.reply_text("🔔 Bot is awake and active!")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check bot status"""
+    update_activity()
+    status_text = (
+        f"🤖 *Bot Status*\n\n"
+        f"• Status: ✅ Running\n"
+        f"• Last activity: {datetime.fromtimestamp(last_activity).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"• Active users: {len(user_data)}\n"
+        f"• Active processes: {len(user_progress)}\n"
+        f"• Render URL: {RENDER_APP_URL if RENDER_APP_URL else 'Not set'}\n"
+        f"• Keep-alive interval: {KEEP_ALIVE_INTERVAL//60} minutes\n\n"
+        f"*Commands:*\n"
+        f"/start - Create new quiz\n"
+        f"/help - Show help\n"
+        f"/wake - Force wake-up\n"
+        f"/status - This status"
+    )
+    await update.message.reply_text(status_text, parse_mode="Markdown")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors"""
+    error = context.error
+    if "terminated by other getUpdates request" in str(error):
+        logger.warning("Another bot instance is running. This is normal during deployment.")
+        return
+    logger.error(f"Update {update} caused error {error}")
+
+def main():
+    """Start the bot"""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is not set!")
+        return
+    
+    # Start health server in a separate thread
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    
+    # Start keep-alive worker if RENDER_APP_URL is set
+    if RENDER_APP_URL:
+        keep_alive_thread = threading.Thread(target=keep_alive_worker, daemon=True)
+        keep_alive_thread.start()
+        logger.info("Keep-alive worker started")
+    else:
+        logger.warning("RENDER_APP_URL not set - keep-alive disabled")
+    
+    # Create and configure bot application
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .read_timeout(60)
+        .write_timeout(60)
+        .connect_timeout(60)
+        .pool_timeout(60)
+        .build()
+    )
+    
+    # Create conversation handler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            GETTING_FILE: [
+                MessageHandler(filters.Document.FileExtension("txt"), handle_document),
+                CommandHandler("cancel", cancel)
+            ],
+            GETTING_QUIZ_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_quiz_name),
+                CommandHandler("cancel", cancel)
+            ],
+            GETTING_TIME: [
+                CallbackQueryHandler(get_time, pattern=r'^(15|20|25|30|custom)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_time_custom),
+                CommandHandler("cancel", cancel)
+            ],
+            GETTING_MARKS: [
+                CallbackQueryHandler(get_marks, pattern=r'^(1|2|3|4|custom_marks)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_marks_custom),
+                CommandHandler("cancel", cancel)
+            ],
+            GETTING_NEGATIVE: [
+                CallbackQueryHandler(get_negative, pattern=r'^(0|0\.25|0\.5|1|custom_negative)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_negative_custom),
+                CommandHandler("cancel", cancel)
+            ],
+            GETTING_CREATOR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_creator),
                 CommandHandler("cancel", cancel)
             ]
         },
