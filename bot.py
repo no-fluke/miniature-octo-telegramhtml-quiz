@@ -113,204 +113,130 @@ def parse_txt_file(content):
     """Parse various TXT file formats and extract questions"""
     questions = []
     
-    # Try different parsing patterns
-    lines = content.strip().split('\n')
+    # Normalize line endings and remove extra spaces
+    content = content.replace('\r\n', '\n').strip()
     
-    current_question = None
-    current_options = []
-    current_explanation = []
-    in_question = False
-    in_options = False
-    in_explanation = False
+    # Try different parsing strategies
+    # Strategy 1: Questions separated by double newlines
+    blocks = re.split(r'\n\s*\n', content)
     
-    for line in lines:
-        line = line.strip()
-        if not line:
+    for block in blocks:
+        block = block.strip()
+        if not block:
             continue
             
-        # Check for question start (various formats)
-        question_match = re.match(r'^(\d+)[\.\)]\s*(.+)$', line) or \
-                        re.match(r'^Q[\.]?\s*(\d+)[\.\)]?\s*(.+)$', line) or \
-                        re.match(r'^Q[\.]?\s*(\d+)[:\-]?\s*(.+)$', line)
-        
-        if question_match:
-            # Save previous question if exists
-            if current_question:
-                question_data = {
-                    "question": current_question,
-                    "option_1": "", "option_2": "", "option_3": "", "option_4": "", "option_5": "",
-                    "answer": "",
-                    "solution_text": "<br>".join(current_explanation) if current_explanation else ""
-                }
-                
-                # Add options
-                for i, option in enumerate(current_options[:5]):
-                    question_data[f"option_{i+1}"] = option
-                
-                questions.append(question_data)
-                
-            # Start new question
-            current_question = question_match.group(2)
-            current_options = []
-            current_explanation = []
-            in_question = True
-            in_options = False
-            in_explanation = False
-            continue
-        
-        # Check for options (multiple formats)
-        option_match = re.match(r'^([a-e])[\.\)]\s*(.+)$', line) or \
-                      re.match(r'^\(([a-e])\)\s*(.+)$', line) or \
-                      re.match(r'^([a-e])\s*[-:]\s*(.+)$', line)
-        
-        if option_match:
-            in_options = True
-            option_text = option_match.group(2)
-            
-            # Check if next line is part of this option (Hindi text)
-            current_options.append(option_text)
-            continue
-        
-        # Check for answer (multiple formats)
-        answer_match = re.match(r'^Correct\s*[:\-]?\s*([a-e])', line, re.IGNORECASE) or \
-                      re.match(r'^Answer\s*[:\-]?\s*\(?([a-e])\)?', line, re.IGNORECASE) or \
-                      re.match(r'^Ans\s*[:\-]?\s*\(?([a-e])\)?', line, re.IGNORECASE)
-        
-        if answer_match:
-            if current_question and current_options:
-                question_data = {
-                    "question": current_question,
-                    "option_1": "", "option_2": "", "option_3": "", "option_4": "", "option_5": "",
-                    "answer": answer_match.group(1).lower(),
-                    "solution_text": "<br>".join(current_explanation) if current_explanation else ""
-                }
-                
-                # Add options
-                for i, option in enumerate(current_options[:5]):
-                    question_data[f"option_{i+1}"] = option
-                
-                questions.append(question_data)
-                
-            # Reset for next question
-            current_question = None
-            current_options = []
-            current_explanation = []
-            in_question = False
-            in_options = False
-            in_explanation = False
-            continue
-        
-        # Check for explanation
-        if re.match(r'^ex[:\-]', line, re.IGNORECASE) or \
-           re.match(r'^explanation[:\-]', line, re.IGNORECASE) or \
-           re.match(r'^solution[:\-]', line, re.IGNORECASE):
-            in_explanation = True
-            exp_text = re.sub(r'^ex[:\-]\s*', '', line, flags=re.IGNORECASE)
-            exp_text = re.sub(r'^explanation[:\-]\s*', '', exp_text, flags=re.IGNORECASE)
-            exp_text = re.sub(r'^solution[:\-]\s*', '', exp_text, flags=re.IGNORECASE)
-            if exp_text:
-                current_explanation.append(exp_text)
-            continue
-        
-        # Add text based on current section
-        if in_explanation:
-            current_explanation.append(line)
-        elif in_options and current_options:
-            # Append to last option (for multi-line options)
-            current_options[-1] += "<br>" + line
-        elif in_question and current_question:
-            # Append to question (for multi-line questions)
-            current_question += "<br>" + line
-    
-    # Add last question if exists
-    if current_question and current_options:
-        question_data = {
-            "question": current_question,
+        question = {
+            "question": "",
             "option_1": "", "option_2": "", "option_3": "", "option_4": "", "option_5": "",
             "answer": "",
-            "solution_text": "<br>".join(current_explanation) if current_explanation else ""
+            "solution_text": ""
         }
         
-        # Add options
-        for i, option in enumerate(current_options[:5]):
-            question_data[f"option_{i+1}"] = option
+        lines = [line.strip() for line in block.split('\n') if line.strip()]
         
-        questions.append(question_data)
-    
-    # If no questions found with the above method, try alternative parsing
-    if not questions:
-        # Try parsing with different pattern
-        blocks = re.split(r'\n\s*\n', content.strip())
+        if len(lines) < 2:  # Need at least question and one option
+            continue
         
-        for block in blocks:
-            lines = [line.strip() for line in block.strip().split('\n') if line.strip()]
-            if len(lines) < 3:  # Minimum lines for a question
-                continue
-                
-            # Look for question and options in block
-            question_lines = []
-            options = []
-            answer = ""
-            explanation_lines = []
+        current_line = 0
+        question_lines = []
+        
+        # Extract question (until we hit something that looks like an option)
+        while current_line < len(lines):
+            line = lines[current_line]
+            # Check if this line starts an option
+            if (re.match(r'^[a-e]\)', line, re.IGNORECASE) or 
+                re.match(r'^\([a-e]\)', line, re.IGNORECASE) or
+                re.match(r'^[a-e]\.', line, re.IGNORECASE) or
+                re.match(r'^\d+\.', line)):
+                break
+            question_lines.append(line)
+            current_line += 1
+        
+        question["question"] = '<br>'.join(question_lines)
+        
+        # Extract options
+        option_count = 0
+        while current_line < len(lines) and option_count < 5:
+            line = lines[current_line]
             
-            for line in lines:
-                # Check if it's an option
-                option_match = re.match(r'^([a-e])[\.\)\-\:]\s*(.+)$', line)
-                if option_match:
-                    options.append(f"{option_match.group(1)}) {option_match.group(2)}")
-                # Check if it's an answer
-                elif re.match(r'^(Correct|Answer|Ans)[:\-]', line, re.IGNORECASE):
-                    ans_match = re.search(r'([a-e])', line, re.IGNORECASE)
-                    if ans_match:
-                        answer = ans_match.group(1).lower()
-                # Check if it's explanation
-                elif re.match(r'^ex[:\-]', line, re.IGNORECASE):
-                    exp_text = re.sub(r'^ex[:\-]\s*', '', line, flags=re.IGNORECASE)
-                    explanation_lines.append(exp_text)
-                else:
-                    # Assume it's part of question
-                    question_lines.append(line)
+            # Check for option patterns
+            option_match = re.match(r'^([a-e])[\)\.]\s*(.*)', line, re.IGNORECASE)
+            if not option_match:
+                option_match = re.match(r'^\(([a-e])\)\s*(.*)', line, re.IGNORECASE)
             
-            if question_lines and options:
-                question_data = {
-                    "question": "<br>".join(question_lines),
-                    "option_1": "", "option_2": "", "option_3": "", "option_4": "", "option_5": "",
-                    "answer": answer,
-                    "solution_text": "<br>".join(explanation_lines) if explanation_lines else ""
-                }
+            if option_match:
+                option_key = f"option_{option_count + 1}"
+                option_letter = option_match.group(1).lower()
+                option_text = option_match.group(2)
                 
-                # Add options
-                for i, option in enumerate(options[:5]):
-                    question_data[f"option_{i+1}"] = option
+                # Check for multi-line options
+                next_line_idx = current_line + 1
+                while (next_line_idx < len(lines) and 
+                       not re.match(r'^[a-e]\)', lines[next_line_idx], re.IGNORECASE) and
+                       not re.match(r'^\([a-e]\)', lines[next_line_idx], re.IGNORECASE) and
+                       not re.match(r'^[a-e]\.', lines[next_line_idx], re.IGNORECASE) and
+                       not re.match(r'^Correct', lines[next_line_idx], re.IGNORECASE) and
+                       not re.match(r'^Answer:', lines[next_line_idx], re.IGNORECASE) and
+                       not re.match(r'^ex:', lines[next_line_idx], re.IGNORECASE)):
+                    option_text += f"<br>{lines[next_line_idx]}"
+                    next_line_idx += 1
                 
-                questions.append(question_data)
-    
-    # Add metadata to each question
-    for i, q in enumerate(questions):
-        q["id"] = str(50000 + i + 1)
-        q["correct_score"] = "1"
-        q["negative_score"] = "0"
-        q["deleted"] = "0"
-        q["difficulty_level"] = "0"
-        q["option_image_1"] = q["option_image_2"] = q["option_image_3"] = ""
-        q["option_image_4"] = q["option_image_5"] = ""
-        q["question_image"] = ""
-        q["solution_heading"] = ""
-        q["solution_image"] = ""
-        q["solution_video"] = ""
-        q["sortingparam"] = "0.00"
+                question[option_key] = option_text
+                option_count += 1
+                current_line = next_line_idx
+            else:
+                current_line += 1
         
-        # Ensure answer is in correct format (1-5)
-        if q["answer"]:
-            answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
-            q["answer"] = answer_map.get(q["answer"].lower(), '1')
+        # Extract correct answer
+        for i in range(current_line, len(lines)):
+            line = lines[i]
+            if re.match(r'^Correct\s*(option)?\s*[:-]\s*([a-e])', line, re.IGNORECASE):
+                match = re.match(r'^Correct\s*(option)?\s*[:-]\s*([a-e])', line, re.IGNORECASE)
+                if match:
+                    ans = match.group(2).lower()
+                    answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
+                    question["answer"] = answer_map.get(ans, '1')
+            elif re.match(r'^Answer\s*[:-]\s*([a-e])', line, re.IGNORECASE):
+                match = re.match(r'^Answer\s*[:-]\s*([a-e])', line, re.IGNORECASE)
+                if match:
+                    ans = match.group(1).lower()
+                    answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
+                    question["answer"] = answer_map.get(ans, '1')
+        
+        # Extract explanation
+        solution_lines = []
+        for i in range(current_line, len(lines)):
+            line = lines[i]
+            if re.match(r'^ex:', line, re.IGNORECASE):
+                solution_lines.append(line[3:].strip())
+            elif re.match(r'^Explanation\s*[:-]', line, re.IGNORECASE):
+                solution_lines.append(line.split(':', 1)[1].strip())
+        
+        question["solution_text"] = '<br>'.join(solution_lines)
+        
+        # Add metadata
+        question["correct_score"] = "3"
+        question["negative_score"] = "1"
+        question["deleted"] = "0"
+        question["difficulty_level"] = "0"
+        question["option_image_1"] = question["option_image_2"] = question["option_image_3"] = ""
+        question["option_image_4"] = question["option_image_5"] = ""
+        question["question_image"] = ""
+        question["solution_heading"] = ""
+        question["solution_image"] = ""
+        question["solution_video"] = ""
+        question["sortingparam"] = "0.00"
+        
+        # Only add if we have at least 2 options and a question
+        if question["question"] and option_count >= 2:
+            questions.append(question)
     
     return questions
 
 def generate_html_quiz(quiz_data):
     """Generate HTML quiz from the parsed data"""
     
-    # Read template HTML
+    # Read template HTML with all new features
     template = """<!doctype html>
 <html lang="en">
 <head>
@@ -324,8 +250,8 @@ def generate_html_quiz(quiz_data):
   --muted:#69707a;
   --success:#1f9e5a;
   --danger:#c82d3f;
-  --warning:#f39c12;
-  --info:#3498db;
+  --warning:#f5a623;
+  --info:#5d6afb;
   --bg:#f5f7fa;
   --card:#fff;
   --maxw:820px;
@@ -340,10 +266,8 @@ h1{{margin:0;color:var(--accent);font-size:18px}}
 .btn{{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;transition:background .18s}}
 .btn:hover{{background:var(--accent-dark)}}
 .btn-ghost{{background:#fff;color:var(--accent);border:2px solid var(--accent);padding:8px 12px;border-radius:999px;font-weight:700;cursor:pointer}}
-.btn-warning{{background:var(--warning);color:#fff}}
-.btn-info{{background:var(--info);color:#fff}}
-.btn-success{{background:var(--success);color:#fff}}
-.btn-danger{{background:var(--danger);color:#fff}}
+.btn-warning{{background:var(--warning);color:#fff;border:none;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer}}
+.btn-success{{background:var(--success);color:#fff;border:none;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer}}
 .timer-text{{color:var(--accent-dark);font-weight:700;font-size:18px;min-width:72px;text-align:right}}
 .toggle-pill{{position:relative;width:90px;height:30px;background:#eaeef0;border-radius:999px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:0 6px;font-size:13px;color:#444;font-weight:600}}
 .toggle-pill span{{z-index:2;flex:1;text-align:center}}
@@ -373,18 +297,15 @@ h1{{margin:0;color:var(--accent);font-size:18px}}
 /* bottom nav */
 .fbar{{position:fixed;left:0;right:0;bottom:0;background:#fff;box-shadow:0 -3px 12px rgba(0,0,0,0.08);display:flex;justify-content:center;z-index:50}}
 .fbar-inner{{display:flex;justify-content:center;align-items:center;gap:10px;max-width:var(--maxw);width:100%;padding:10px}}
-.fbar button{{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;min-width:80px}}
-.fbar button:hover{{background:var(--accent-dark)}}
-.fbar .btn-warning{{background:var(--warning)}}
-.fbar .btn-info{{background:var(--info)}}
+.fbar button{{padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;border:none;border-radius:6px}}
 
 /* palette popup */
 #palette{{position:fixed;top:64px;right:14px;background:#fff;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.12);padding:12px;display:none;gap:8px;flex-wrap:wrap;z-index:200;max-width:300px;max-height:70vh;overflow-y:auto;overscroll-behavior:contain}}
 #palette .qbtn{{width:44px;height:44px;border-radius:8px;border:1px solid #e3eaeb;background:#fbfdff;cursor:pointer;font-weight:700}}
-#palette .qbtn.attempted{{background:var(--success);color:#fff;border:none}}
+#palette .qbtn.answered{{background:var(--success);color:#fff;border:none}}
 #palette .qbtn.unattempted{{background:var(--danger);color:#fff;border:none}}
-#palette .qbtn.marked{{background:var(--warning);color:#fff;border:none}}
-#palette .qbtn.current{{font-weight:bold;border:3px solid var(--accent);transform:scale(1.1)}}
+#palette .qbtn.marked{{background:#9370db;color:#fff;border:none}}
+#palette .qbtn.current{{border:3px solid var(--accent);font-weight:800}}
 #palette-summary{{margin-top:8px;font-size:13px;color:var(--muted);text-align:center}}
 
 /* modal */
@@ -402,10 +323,24 @@ h1{{margin:0;color:var(--accent);font-size:18px}}
 .stat h4{{margin:0;color:var(--accent);font-size:13px}}
 .stat p{{margin:6px 0 0;font-weight:700;font-size:18px}}
 
-/* download buttons */
-.download-buttons{{display:flex;gap:10px;margin:20px 0;flex-wrap:wrap}}
-.download-buttons button{{flex:1;min-width:150px}}
-
+@media(max-width:768px){{
+  .header-inner{{flex-direction:column;gap:10px;padding:10px}}
+  .timer-text{{font-size:16px}}
+  .fbar-inner{{gap:6px;padding:8px}}
+  .fbar button{{padding:8px 10px;font-size:12px}}
+  .fbar-inner{{flex-wrap:wrap}}
+  #palette{{top:120px;right:10px;max-width:280px}}
+}}
+@media(max-width:480px){{
+  .container{{padding:8px}}
+  .header-inner{{padding:8px}}
+  .fbar-inner{{gap:4px;padding:6px}}
+  .fbar button{{padding:6px 8px;font-size:11px}}
+  .btn,.btn-ghost,.btn-warning{{padding:6px 10px;font-size:12px}}
+}}
+@media(min-width:1024px){{
+  .container{{max-width:900px;padding:20px}}
+}}
 /* 🔐 COPY & SELECTION BLOCK */
 body {{
   -webkit-user-select: none;
@@ -444,34 +379,52 @@ mjx-container {{
 
 /* 🔢 Make MathJax match quiz text font */
 mjx-container {{
-  font-family: Inter, system-ui, -apple-system, "Segoe UI",Roboto,sans-serif !important;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif !important;
   font-size: 1em;
 }}
 
-/* Responsive adjustments */
-@media (max-width: 768px) {{
-  .container{{padding:8px}}
-  .header-inner{{padding:6px;flex-wrap:wrap}}
-  .fbar-inner{{gap:6px;padding:8px}}
-  .fbar button{{padding:8px 10px;font-size:12px;min-width:70px}}
-  .stat{{flex:1 1 100px;padding:8px}}
-  .stat p{{font-size:16px}}
-  #palette{{max-width:250px}}
-  #palette .qbtn{{width:38px;height:38px}}
+/* PDF Download Button */
+.pdf-download-btn {{
+  background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}}
+.pdf-download-btn:hover {{
+  background: linear-gradient(135deg, #ee5a24, #d64500);
 }}
 
-@media (max-width: 480px) {{
-  .header-inner{{flex-direction:column;gap:8px}}
-  .fbar-inner{{flex-wrap:wrap}}
-  .fbar button{{flex:1 1 calc(50% - 10px);max-width:none}}
-  .stat{{flex:1 1 100%}}
-  .download-buttons button{{min-width:100%}}
+/* Question status indicators */
+.status-indicator {{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-left: 10px;
 }}
-
-/* Tablet optimizations */
-@media (min-width: 769px) and (max-width: 1024px) {{
-  .container{{max-width:90%}}
-  #palette{{max-width:280px}}
+.status-dot {{
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}}
+.status-answered {{
+  background: var(--success);
+}}
+.status-unattempted {{
+  background: var(--danger);
+}}
+.status-marked {{
+  background: #9370db;
+}}
+.status-unseen {{
+  background: #ccc;
 }}
 
 </style>
@@ -494,42 +447,20 @@ mjx-container {{
   async>
 </script>
 
-<!-- PDF Generation Libraries -->
+<!-- jsPDF for PDF generation -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
 
 </head>
 <body>
 <!-- 🔐 WATERMARK LAYER -->
 <div id="ssc-watermark" class="ssc-watermark">
-  <div class="ssc-wm" style="top:10%; left:5%;">Quiz Generated</div>
-  <div class="ssc-wm" style="top:30%; left:60%;">Quiz Generated</div>
-  <div class="ssc-wm" style="top:55%; left:25%;">Quiz Generated</div>
-  <div class="ssc-wm" style="top:75%; left:65%;">Quiz Generated</div>
-  <div class="ssc-wm" style="top:90%; left:10%;">Quiz Generated</div>
+  <div class="ssc-wm" style="top:10%; left:5%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:30%; left:60%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:55%; left:25%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:75%; left:65%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:90%; left:10%;">@SSC_JOURNEY2</div>
 </div>
-
-<!-- 🔥 FIREBASE SDK -->
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-
-<script>
-  const firebaseConfig = {{
-    apiKey: "AIzaSyBWF7Ojso-w0BucbqJylGR7h9eGeDQodzE",
-    authDomain: "ssc-quiz-rank-percentile.firebaseapp.com",
-    databaseURL: "https://ssc-quiz-rank-percentile-default-rtdb.firebaseio.com",
-    projectId: "ssc-quiz-rank-percentile",
-    storageBucket: "ssc-quiz-rank-percentile.firebasestorage.app",
-    messagingSenderId: "944635517164",
-    appId: "1:944635517164:web:62f0cc83892917f225edc9"
-  }};
-
-  // 🔥 Initialize Firebase
-  firebase.initializeApp(firebaseConfig);
-
-  // 🔥 Realtime Database reference
-  const db = firebase.database();
-</script>
 
 <header id="mainHeader">
   <div class="header-inner" id="headerControls">
@@ -565,10 +496,11 @@ mjx-container {{
 
 <div class="fbar" id="floatBar">
   <div class="fbar-inner">
-    <button id="prevBtn">← Prev</button>
-    <button id="markReviewBtn" class="btn-warning">Mark for Review</button>
-    <button id="clearBtn">Clear</button>
-    <button id="saveNextBtn" class="btn-success">Save & Next →</button>
+    <button id="prevBtn" class="btn-ghost">← Prev</button>
+    <button id="clearBtn" class="btn-ghost">Clear</button>
+    <button id="markBtn" class="btn-warning">Mark for Review</button>
+    <button id="saveNextBtn" class="btn-success">Save & Next</button>
+    <button id="nextBtn" class="btn-ghost">Next →</button>
   </div>
 </div>
 
@@ -611,151 +543,6 @@ function normalizeMathForQuiz(container) {{
 }}
 
 
-function _hx(s){{
-  let h = 0;
-  for(let i = 0; i < s.length; i++){{
-    h = ((h << 5) - h) + s.charCodeAt(i);
-    h |= 0;
-  }}
-  return h;
-}}
-
-let __QUIZ_OK = true;
-
-// 🔐 SAFE Device ID (works everywhere)
-let DEVICE_ID = localStorage.getItem("ssc_quiz_device_id");
-if (!DEVICE_ID) {{
-  DEVICE_ID = "dev-" + Date.now() + "-" + Math.random().toString(36).substring(2, 12);
-  localStorage.setItem("ssc_quiz_device_id", DEVICE_ID);
-}}
-
-const QUIZ_TITLE = "{quiz_name}";
-const QUIZ_STATE_KEY = "ssc_quiz_state_{quiz_name}";
-const QUIZ_RESULT_KEY = "ssc_quiz_result_{quiz_name}";
-
-
-
-// 🔥 FIREBASE: SAVE ONLY FIRST ATTEMPT (ADMIN DATA)
-function saveResultFirebase(payload) {{
-  const ref = db.ref(
-    "quiz_results/" + payload.quizId + "/" + payload.deviceId
-  );
-
-  return ref.once("value").then(snap => {{
-    if (snap.exists()) {{
-      // ❌ already attempted → DO NOT overwrite admin data
-      return false;
-    }}
-
-    // ✅ first attempt only
-    return ref.set(payload);
-  }});
-}}
-function saveAttemptHistory(payload) {{
-  const ref = db.ref(
-    "attempt_history/" +
-    payload.quizId + "/" +
-    payload.deviceId + "/" +
-    payload.submittedAt
-  );
-  return ref.set(payload);
-}}
-
-// 🔥 FIREBASE: RANK + PERCENTILE (SCORE ↓, TIME ↑)
-function getRankAndPercentile(quizId, myScore, myTime, mySubmittedAt) {{
-  return db
-    .ref("attempt_history/" + quizId)
-    .once("value")
-    .then(snapshot => {{
-      const quizData = snapshot.val() || {{}};
-      let attempts = [];
-
-      // collect ALL attempts from ALL devices
-      Object.values(quizData).forEach(deviceAttempts => {{
-        Object.values(deviceAttempts).forEach(attempt => {{
-          attempts.push(attempt);
-        }});
-      }});
-
-      // sort: score desc, time asc
-      attempts.sort((a, b) => {{
-        if (b.score !== a.score) return b.score - a.score;
-        return a.timeTaken - b.timeTaken;
-      }});
-
-      const total = attempts.length;
-
-      let rank = total + 1;
-      for (let i = 0; i < attempts.length; i++) {{
-        if (
-          attempts[i].score === myScore &&
-          attempts[i].timeTaken === myTime &&
-          attempts[i].submittedAt === mySubmittedAt
-        ) {{
-
-          rank = i + 1;
-          break;
-        }}
-      }}
-
-      const below = attempts.filter(
-        a =>
-          a.score < myScore ||
-          (a.score === myScore && a.timeTaken > myTime)
-      ).length;
-
-      const percentile = total
-        ? ((below / total) * 100).toFixed(2)
-        : "0.00";
-
-      return {{ rank, percentile, total }};
-    }});
-}}
-
-// 🔥 LIVE rank recalculation for PREVIOUS attempts
-function getLiveRankForAttempt(quizId, attempt) {{
-  return db.ref("attempt_history/" + quizId)
-    .once("value")
-    .then(snapshot => {{
-      const quizData = snapshot.val() || {{}};
-      let attempts = [];
-
-      Object.values(quizData).forEach(deviceAttempts => {{
-        Object.values(deviceAttempts).forEach(a => {{
-          attempts.push(a);
-        }});
-      }});
-
-      // SAME SORT LOGIC (score ↓, time ↑)
-      attempts.sort((a, b) => {{
-        if (b.score !== a.score) return b.score - a.score;
-        return a.timeTaken - b.timeTaken;
-      }});
-
-      const total = attempts.length;
-
-      let rank = total;
-      for (let i = 0; i < attempts.length; i++) {{
-        if (attempts[i].submittedAt === attempt.submittedAt) {{
-          rank = i + 1;
-          break;
-        }}
-      }}
-
-      const below = attempts.filter(
-        a =>
-          a.score < attempt.score ||
-          (a.score === attempt.score && a.timeTaken > attempt.timeTaken)
-      ).length;
-
-      const percentile = total
-        ? ((below / total) * 100).toFixed(2)
-        : "0.00";
-
-      return {{ rank, percentile, total }};
-    }});
-}}
-
 /* data from Jinja */
 const QUESTIONS = {questions_array};
 
@@ -765,8 +552,7 @@ const QUESTIONS = {questions_array};
 
 let current = 0;
 let answers = {{}};            // {{ questionId: "1", ... }}
-let markedForReview = {{}};    // {{ questionId: true, ... }}
-let seenQuestions = {{}};      // {{ questionId: true, ... }}
+let marked = new Set();        // Set of marked question indices
 let ALL_ATTEMPTS_CACHE = {{}};
 let LAST_RESULT_HTML = "";
 let seconds = {seconds}; //  countdown
@@ -778,9 +564,8 @@ function saveQuizState(){{
   const state = {{
     current,
     answers,
-    markedForReview,
-    seenQuestions,
-    seconds
+    seconds,
+    marked: Array.from(marked)
   }};
   localStorage.setItem(QUIZ_STATE_KEY, JSON.stringify(state));
 }}
@@ -856,8 +641,6 @@ function startTimer(){{
 
 /* initialize */
 function init(){{
-  if (!__QUIZ_OK) return;
-
   el("qtotal").textContent = QUESTIONS.length;
 
   // 🔥 CHECK IF QUIZ ALREADY SUBMITTED
@@ -894,9 +677,8 @@ function init(){{
     const state = JSON.parse(saved);
     current = state.current ?? 0;
     answers = state.answers ?? {{}};
-    markedForReview = state.markedForReview ?? {{}};
-    seenQuestions = state.seenQuestions ?? {{}};
     seconds = state.seconds ?? seconds;
+    marked = new Set(state.marked || []);
   }}
 
   renderQuestion(current);
@@ -912,7 +694,6 @@ function init(){{
 
 /* render question */
 function renderQuestion(i){{
-  if (!__QUIZ_OK) return;
   current = i;
   const q = QUESTIONS[i];
   el("qindex").textContent = i+1;
@@ -945,9 +726,6 @@ function renderQuestion(i){{
     if(answers[qid] === String(idx+1)) div.classList.add("selected");
   }});
 
-  // Mark as seen
-  seenQuestions[i] = true;
-  
   highlightPalette();
   renderMath();
   saveQuizState();
@@ -957,8 +735,6 @@ function renderQuestion(i){{
 function selectOption(q, val, div){{
   const qid = q.id ?? current;
   answers[qid] = String(val);
-  // Remove from marked for review if answered
-  delete markedForReview[qid];
   // clear previous selections visually
   Array.from(el("options").children).forEach(o => o.className = "opt");
   div.classList.add("selected");
@@ -1138,10 +914,10 @@ function submitQuiz(){{
       <button class="btn-ghost" onclick="filterResults('unattempted')">UNATTEMPTED</button>
     </div>
     
-    <div class="download-buttons">
-      <button class="btn-success" onclick="downloadPDF()">Download PDF with Explanations</button>
-      <button class="btn-info" onclick="downloadResults()">Download HTML Results</button>
-    </div>
+    <!-- PDF Download Button -->
+    <button class="pdf-download-btn" onclick="downloadPDF()">
+      📥 Download PDF Report
+    </button>
 
 </div></div>`;
 
@@ -1180,7 +956,6 @@ function submitQuiz(){{
   // hide bottom nav
   el("floatBar").style.display = "none";
   LAST_RESULT_HTML = reviewHTML; // ✅ FIX: store latest result immediately
-
 
   document.getElementById("mainHeader")?.style.setProperty("display", "block");
 
@@ -1229,8 +1004,6 @@ saveResultFirebase(firebasePayload)
 
         firebasePayload.rank = data.rank;
         firebasePayload.percentile = data.percentile;
-
-
 
         // 🔥 UPDATE THIS ATTEMPT WITH RANK & PERCENTILE
         db.ref(
@@ -1345,69 +1118,116 @@ function downloadResults(){{
   URL.revokeObjectURL(url);
 }}
 
-/* Download results as PDF */
+/* Download PDF with results and explanations */
 function downloadPDF() {{
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF('p', 'mm', 'a4');
   
-  // Capture the results div
-  html2canvas(document.getElementById('results'), {{
-    scale: 2,
-    useCORS: true,
-    logging: false,
-    backgroundColor: '#ffffff'
-  }}).then(canvas => {{
-    const imgData = canvas.toDataURL('image/png');
-    const imgWidth = 190; // A4 width in mm
-    const pageHeight = 280; // A4 height in mm
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
-    
-    let heightLeft = imgHeight;
-    let position = 10;
-    
-    doc.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    
-    // Add new pages if content is too long
-    while (heightLeft >= 0) {{
-      position = heightLeft - imgHeight;
+  // Title
+  doc.setFontSize(20);
+  doc.text(QUIZ_TITLE, 105, 15, {{ align: 'center' }});
+  
+  // Summary
+  doc.setFontSize(12);
+  const stats = document.querySelectorAll('.stat p');
+  const summary = [
+    `Correct: ${{stats[0]?.textContent || 0}}`,
+    `Wrong: ${{stats[1]?.textContent || 0}}`,
+    `Unattempted: ${{stats[2]?.textContent || 0}}`,
+    `Accuracy: ${{stats[3]?.textContent || '0%'}}`,
+    `Total Marks: ${{stats[4]?.textContent || '0/0'}}`,
+    `Time Taken: ${{stats[5]?.textContent || '00:00'}}`,
+    `Rank: ${{stats[6]?.textContent || 'N/A'}}`,
+    `Percentile: ${{stats[7]?.textContent || '0%'}}`
+  ];
+  
+  let yPos = 30;
+  doc.setFontSize(14);
+  doc.text('Summary:', 20, yPos);
+  yPos += 10;
+  
+  doc.setFontSize(11);
+  summary.forEach((stat, i) => {{
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    doc.text(stat, 20 + (col * 90), yPos + (row * 7));
+  }});
+  
+  yPos += 25;
+  
+  // Questions
+  const questions = document.querySelectorAll('.result-q');
+  questions.forEach((q, idx) => {{
+    if (yPos > 270) {{
       doc.addPage();
-      doc.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
+      yPos = 20;
     }}
     
-    const safe = String(QUIZ_TITLE).replace(/[^a-z0-9]/gi,"_");
-    doc.save(`${{safe}}_results.pdf`);
+    const questionText = q.querySelector('div[style*="font-weight:700"]')?.textContent || `Q${{idx+1}}`;
+    const options = q.querySelectorAll('div[style*="padding:8px 10px"]');
+    const explanation = q.querySelector('.explanation');
+    
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'bold');
+    doc.text(questionText, 20, yPos, {{ maxWidth: 170 }});
+    yPos += doc.getTextDimensions(questionText, {{ maxWidth: 170 }}).h + 5;
+    
+    doc.setFont(undefined, 'normal');
+    options.forEach((opt, optIdx) => {{
+      const style = opt.getAttribute('style');
+      const isCorrect = style?.includes('var(--success)');
+      const isWrong = style?.includes('var(--danger)');
+      
+      let prefix = String.fromCharCode(97 + optIdx) + ') ';
+      if (isCorrect) prefix = '✓ ' + prefix;
+      if (isWrong) prefix = '✗ ' + prefix;
+      
+      const text = prefix + opt.textContent;
+      doc.text(text, 25, yPos, {{ maxWidth: 160 }});
+      yPos += doc.getTextDimensions(text, {{ maxWidth: 160 }}).h + 3;
+    }});
+    
+    if (explanation && explanation.style.display !== 'none') {{
+      yPos += 5;
+      doc.setFont(undefined, 'italic');
+      doc.text('Explanation: ' + explanation.textContent.replace('Explanation:', '').trim(), 20, yPos, {{ maxWidth: 170 }});
+      yPos += doc.getTextDimensions('Explanation: ' + explanation.textContent, {{ maxWidth: 170 }}).h + 10;
+    }}
+    
+    yPos += 10;
   }});
+  
+  doc.save(`${{QUIZ_TITLE.replace(/[^a-zA-Z0-9]/g, '_')}}_Report.pdf`);
+}}
+
+function markForReview() {{
+  if (marked.has(current)) {{
+    marked.delete(current);
+  }} else {{
+    marked.add(current);
+  }}
+  highlightPalette();
+  saveQuizState();
+}}
+
+function saveAndNext() {{
+  const qid = QUESTIONS[current].id ?? current;
+  if (answers[qid]) {{
+    if (current < QUESTIONS.length - 1) {{
+      renderQuestion(current + 1);
+    }}
+  }} else {{
+    alert("Please select an answer before proceeding.");
+  }}
 }}
 
 /* attach DOM listeners */
 function attachListeners(){{
+  el("nextBtn").addEventListener("click", ()=> {{ if(current < QUESTIONS.length-1) renderQuestion(current+1); }});
   el("prevBtn").addEventListener("click", ()=> {{ if(current > 0) renderQuestion(current-1); }});
-  el("clearBtn").addEventListener("click", ()=> {{ 
-    const qid = QUESTIONS[current].id ?? current;
-    delete answers[qid];
-    delete markedForReview[qid];
-    renderQuestion(current); 
-    highlightPalette(); 
-  }});
-  
-  el("saveNextBtn").addEventListener("click", ()=> {{ 
-    if(current < QUESTIONS.length-1) {{
-      renderQuestion(current+1);
-    }}
-  }});
-  
-  el("markReviewBtn").addEventListener("click", ()=> {{ 
-    const qid = QUESTIONS[current].id ?? current;
-    if (markedForReview[qid]) {{
-      delete markedForReview[qid];
-    }} else {{
-      markedForReview[qid] = true;
-    }}
-    highlightPalette();
-    saveQuizState();
-  }});
+  el("clearBtn").addEventListener("click", ()=> {{ delete answers[QUESTIONS[current].id ?? current]; renderQuestion(current); highlightPalette(); }});
+  el("markBtn").addEventListener("click", markForReview);
+  el("saveNextBtn").addEventListener("click", saveAndNext);
 
   el("paletteBtn").addEventListener("click", (e) => {{
     e.stopPropagation();
@@ -1471,31 +1291,36 @@ function highlightPalette(){{
   if(!pal) return;
   const total = QUESTIONS.length;
   const attempted = Object.keys(answers).length;
-  const marked = Object.keys(markedForReview).length;
-  const notAttempted = total - attempted;
+  const markedCount = marked.size;
+  const unattempted = total - attempted;
   Array.from(pal.children).forEach((child, idx) => {{
     // skip summary
     if(child.id === "palette-summary") return;
-    child.classList.remove("attempted", "unattempted", "marked", "current", "unseen");
+    child.classList.remove("answered","unattempted","marked","current");
     
     const qid = QUESTIONS[idx].id ?? idx;
-    
     if(idx === current) {{
       child.classList.add("current");
-    }}
-    
-    if(answers[qid]) {{
-      child.classList.add("attempted");
-    }} else if(markedForReview[qid]) {{
+    }} else if(marked.has(idx)) {{
       child.classList.add("marked");
-    }} else if(seenQuestions[idx]) {{
-      child.classList.add("unattempted");
+    }} else if(answers[qid]) {{
+      child.classList.add("answered");
     }} else {{
-      child.classList.add("unseen");
+      child.classList.add("unattempted");
     }}
   }});
   const summary = el("palette-summary");
-  if(summary) summary.textContent = `Total: ${{total}} | Attempted: ${{attempted}} | Marked: ${{marked}} | Unseen: ${{total - Object.keys(seenQuestions).length}}`;
+  if(summary) {{
+    summary.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-bottom:5px;">
+        <div class="status-indicator"><span class="status-dot status-answered"></span> Answered</div>
+        <div class="status-indicator"><span class="status-dot status-unattempted"></span> Unattempted</div>
+        <div class="status-indicator"><span class="status-dot status-marked"></span> Marked</div>
+        <div class="status-indicator"><span class="status-dot status-unseen"></span> Unseen</div>
+      </div>
+      <div>Total: ${{total}} | Attempted: ${{attempted}} | Marked: ${{markedCount}} | Unseen: ${{total - attempted - markedCount}}</div>
+    `;
+  }}
 }}
 
 /* toggle palette visibility */
@@ -1548,6 +1373,175 @@ function filterResults(type){{
   }});
 }}
 
+function _hx(s){{
+  let h = 0;
+  for(let i = 0; i < s.length; i++){{
+    h = ((h << 5) - h) + s.charCodeAt(i);
+    h |= 0;
+  }}
+  return h;
+}}
+
+let __QUIZ_OK = true;
+
+// 🔐 SAFE Device ID (works everywhere)
+let DEVICE_ID = localStorage.getItem("ssc_quiz_device_id");
+if (!DEVICE_ID) {{
+  DEVICE_ID = "dev-" + Date.now() + "-" + Math.random().toString(36).substring(2, 12);
+  localStorage.setItem("ssc_quiz_device_id", DEVICE_ID);
+}}
+
+const QUIZ_TITLE = "{quiz_name}";
+const QUIZ_STATE_KEY = "ssc_quiz_state_{quiz_name}";
+const QUIZ_RESULT_KEY = "ssc_quiz_result_{quiz_name}";
+
+
+
+// 🔥 FIREBASE: SAVE ONLY FIRST ATTEMPT (ADMIN DATA)
+function saveResultFirebase(payload) {{
+  const ref = db.ref(
+    "quiz_results/" + payload.quizId + "/" + payload.deviceId
+  );
+
+  return ref.once("value").then(snap => {{
+    if (snap.exists()) {{
+      // ❌ already attempted → DO NOT overwrite admin data
+      return false;
+    }}
+
+    // ✅ first attempt only
+    return ref.set(payload);
+  }});
+}}
+function saveAttemptHistory(payload) {{
+  const ref = db.ref(
+    "attempt_history/" +
+    payload.quizId + "/" +
+    payload.deviceId + "/" +
+    payload.submittedAt
+  );
+  return ref.set(payload);
+}}
+
+// 🔥 FIREBASE: RANK + PERCENTILE (SCORE ↓, TIME ↑)
+function getRankAndPercentile(quizId, myScore, myTime, mySubmittedAt) {{
+  return db
+    .ref("attempt_history/" + quizId)
+    .once("value")
+    .then(snapshot => {{
+      const quizData = snapshot.val() || {{}};
+      let attempts = [];
+
+      // collect ALL attempts from ALL devices
+      Object.values(quizData).forEach(deviceAttempts => {{
+        Object.values(deviceAttempts).forEach(attempt => {{
+          attempts.push(attempt);
+        }});
+      }});
+
+      // sort: score desc, time asc
+      attempts.sort((a, b) => {{
+        if (b.score !== a.score) return b.score - a.score;
+        return a.timeTaken - b.timeTaken;
+      }});
+
+      const total = attempts.length;
+
+      let rank = total + 1;
+      for (let i = 0; i < attempts.length; i++) {{
+        if (
+          attempts[i].score === myScore &&
+          attempts[i].timeTaken === myTime &&
+          attempts[i].submittedAt === mySubmittedAt
+        ) {{
+
+          rank = i + 1;
+          break;
+        }}
+      }}
+
+      const below = attempts.filter(
+        a =>
+          a.score < myScore ||
+          (a.score === myScore && a.timeTaken > myTime)
+      ).length;
+
+      const percentile = total
+        ? ((below / total) * 100).toFixed(2)
+        : "0.00";
+
+      return {{ rank, percentile, total }};
+    }});
+}}
+
+// 🔥 LIVE rank recalculation for PREVIOUS attempts
+function getLiveRankForAttempt(quizId, attempt) {{
+  return db.ref("attempt_history/" + quizId)
+    .once("value")
+    .then(snapshot => {{
+      const quizData = snapshot.val() || {{}};
+      let attempts = [];
+
+      Object.values(quizData).forEach(deviceAttempts => {{
+        Object.values(deviceAttempts).forEach(a => {{
+          attempts.push(a);
+        }});
+      }});
+
+      // SAME SORT LOGIC (score ↓, time ↑)
+      attempts.sort((a, b) => {{
+        if (b.score !== a.score) return b.score - a.score;
+        return a.timeTaken - b.timeTaken;
+      }});
+
+      const total = attempts.length;
+
+      let rank = total;
+      for (let i = 0; i < attempts.length; i++) {{
+        if (attempts[i].submittedAt === attempt.submittedAt) {{
+          rank = i + 1;
+          break;
+        }}
+      }}
+
+      const below = attempts.filter(
+        a =>
+          a.score < attempt.score ||
+          (a.score === attempt.score && a.timeTaken > attempt.timeTaken)
+      ).length;
+
+      const percentile = total
+        ? ((below / total) * 100).toFixed(2)
+        : "0.00";
+
+      return {{ rank, percentile, total }};
+    }});
+}}
+
+
+
+// 🔥 FIREBASE SDK
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+  const firebaseConfig = {{
+    apiKey: "AIzaSyBWF7Ojso-w0BucbqJylGR7h9eGeDQodzE",
+    authDomain: "ssc-quiz-rank-percentile.firebaseapp.com",
+    databaseURL: "https://ssc-quiz-rank-percentile-default-rtdb.firebaseio.com",
+    projectId: "ssc-quiz-rank-percentile",
+    storageBucket: "ssc-quiz-rank-percentile.firebasestorage.app",
+    messagingSenderId: "944635517164",
+    appId: "1:944635517164:web:62f0cc83892917f225edc9"
+  }};
+
+  // 🔥 Initialize Firebase
+  firebase.initializeApp(firebaseConfig);
+
+  // 🔥 Realtime Database reference
+  const db = firebase.database();
+</script>
+
 /* start */
 window.addEventListener("DOMContentLoaded", init);
 </script>
@@ -1580,23 +1574,24 @@ window.addEventListener("DOMContentLoaded", init);
     
     return html
 
-# Bot Handlers
+# Bot Handlers (remain the same as before)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message"""
     update_activity()
     await update.message.reply_text(
         "📚 *Quiz Generator Bot*\n\n"
         "Send me a TXT file with questions in any format:\n\n"
-        "**Supported Formats:**\n"
-        "1. Q1. Question text\n"
-        "   a) Option 1\n"
-        "   b) Option 2\n"
-        "   Answer: (a)\n\n"
-        "2. 1. Question text\n"
-        "   a) Option 1\n"
-        "   b) Option 2\n"
-        "   Correct option:-a\n\n"
-        "3. Any format with questions and options!\n\n"
+        "Example formats:\n"
+        "1. Question text\n"
+        "a) Option 1\n"
+        "b) Option 2\n"
+        "Correct option:-a\n"
+        "ex: Explanation\n\n"
+        "OR\n\n"
+        "Q.1 Question text\n"
+        "(a) Option 1\n"
+        "(b) Option 2\n"
+        "Answer: (a)\n\n"
         "**Commands:**\n"
         "/start - Show this message\n"
         "/help - Show help\n"
@@ -1862,12 +1857,7 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        f"⏱️ TIME: {context.user_data['time']} Minutes\n"
                        f"✍️ EACH QUESTION MARK: {context.user_data['marks']}\n"
                        f"⚠️ NEGATIVE MARKING: {context.user_data['negative']}\n"
-                       f"🏆 CREATED BY: {context.user_data['creator']}\n\n"
-                       f"✨ **New Features:**\n"
-                       f"• PDF Download with explanations\n"
-                       f"• Mark for Review button\n"
-                       f"• Enhanced view palette with colors\n"
-                       f"• Optimized for all devices",
+                       f"🏆 CREATED BY: {context.user_data['creator']}",
                 parse_mode="Markdown"
             )
         
@@ -1909,26 +1899,43 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /cancel - Cancel current operation
 
 *File Format:*
-Your TXT file can be in ANY format! The bot will automatically detect:
-- Questions with numbers (1., Q1, etc.)
-- Options with letters (a), b), etc.)
-- Answers (Answer: a, Correct option:-a, etc.)
-- Explanations (ex: ..., Explanation: ...)
+Your TXT file can have any of these formats:
+
+Format 1:
+1. Question text
+a) Option 1
+b) Option 2
+Correct option:-a
+ex: Explanation text...
+
+Format 2:
+Q.1 Question text?
+(a) Option 1
+(b) Option 2
+Answer: (a)
+
+*Features:*
+• Parses any TXT format with questions
+• Interactive quiz interface with color-coded view
+• Timer with countdown
+• Test/Quiz mode toggle
+• Rank and percentile system
+• Previous attempts tracking
+• Firebase integration
+• Mobile, tablet & desktop responsive design
+• Mark for review feature
+• PDF download with explanations
 
 *New Features:*
-• PDF Download with explanations
-• Mark for Review button
-• Enhanced view palette with colors:
-  - Green: Attempted questions
-  - Red: Unattempted but seen questions
-  - Violet: Marked for review
-  - White: Unseen questions
-• Optimized for laptop, tablet, and mobile
-• Rank system works perfectly
+• Color-coded question palette:
+  - Green: Attempted
+  - Red: Unattempted  
+  - Purple: Marked for review
+  - Bold: Current question
+• Mark for review button
 • Save & Next button
-
-*No Sleep System:* 
-This bot has an integrated keep-alive system that prevents it from sleeping on platforms like Render.
+• PDF download with full report
+• Optimized for all devices
 """
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -2007,17 +2014,17 @@ def main():
                 CommandHandler("cancel", cancel)
             ],
             GETTING_TIME: [
-                CallbackQueryHandler(get_time, pattern=r'^(15|20|25|30|custom)$'),
+                CallbackQueryHandler(get_time, pattern="^(15|20|25|30|custom)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_time_custom),
                 CommandHandler("cancel", cancel)
             ],
             GETTING_MARKS: [
-                CallbackQueryHandler(get_marks, pattern=r'^(1|2|3|4|custom_marks)$'),
+                CallbackQueryHandler(get_marks, pattern="^(1|2|3|4|custom_marks)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_marks_custom),
                 CommandHandler("cancel", cancel)
             ],
             GETTING_NEGATIVE: [
-                CallbackQueryHandler(get_negative, pattern=r'^(0|0\.25|0\.5|1|custom_negative)$'),
+                CallbackQueryHandler(get_negative, pattern="^(0|0.25|0.5|1|custom_negative)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_negative_custom),
                 CommandHandler("cancel", cancel)
             ],
