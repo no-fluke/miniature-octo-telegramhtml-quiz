@@ -337,6 +337,50 @@ input, textarea {{
   user-select: text !important;
 }}
 
+/* 🔐 WATERMARK BASE */
+.ssc-watermark {{
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+}}
+
+.ssc-wm {{
+  position: absolute;
+  font-size: 26px;
+  font-weight: 700;
+  color: rgba(0,0,0,0.045);
+  transform: rotate(-30deg);
+  white-space: nowrap;
+}}
+
+/* Student Name Input */
+#studentNameContainer {{
+  max-width:600px;
+  margin:10px auto 20px auto;
+  padding:0 16px;
+  z-index: 5;
+  position: relative;
+}}
+
+#studentName {{
+  width:100%;
+  padding:12px 16px;
+  font-size:15px;
+  border:2px solid var(--accent);
+  border-radius:8px;
+  background:#fff;
+  box-shadow:0 2px 8px rgba(0,0,0,0.1);
+  transition:border-color 0.2s;
+}}
+
+#studentName:focus {{
+  outline:none;
+  border-color:var(--accent-dark);
+  box-shadow:0 0 0 3px rgba(46,196,182,0.2);
+}}
+
 /* 🔢 MathJax mobile safety */
 mjx-container {{
   max-width: 100%;
@@ -400,6 +444,16 @@ mjx-container {{
   .stat {{
     flex: 1 1 auto;
   }}
+  
+  #studentNameContainer {{
+    padding: 0 12px;
+    margin: 8px auto 16px auto;
+  }}
+  
+  #studentName {{
+    padding: 10px 14px;
+    font-size: 14px;
+  }}
 }}
 
 @media (max-width: 480px) {{
@@ -427,6 +481,11 @@ mjx-container {{
   
   .card {{
     padding: 8px;
+  }}
+  
+  #studentName {{
+    padding: 8px 12px;
+    font-size: 13px;
   }}
 }}
 
@@ -472,8 +531,51 @@ mjx-container {{
   async>
 </script>
 
+<!-- 🔥 FIREBASE SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+  const firebaseConfig = {{
+    apiKey: "AIzaSyBWF7Ojso-w0BucbqJylGR7h9eGeDQodzE",
+    authDomain: "ssc-quiz-rank-percentile.firebaseapp.com",
+    databaseURL: "https://ssc-quiz-rank-percentile-default-rtdb.firebaseio.com",
+    projectId: "ssc-quiz-rank-percentile",
+    storageBucket: "ssc-quiz-rank-percentile.firebasestorage.app",
+    messagingSenderId: "944635517164",
+    appId: "1:944635517164:web:62f0cc83892917f225edc9"
+  }};
+
+  // 🔥 Initialize Firebase
+  if (!firebase.apps.length) {{
+    firebase.initializeApp(firebaseConfig);
+  }}
+
+  // 🔥 Realtime Database reference
+  const db = firebase.database();
+</script>
+
 </head>
 <body>
+
+<!-- 🔐 WATERMARK LAYER -->
+<div id="ssc-watermark" class="ssc-watermark">
+  <div class="ssc-wm" style="top:10%; left:5%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:30%; left:60%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:55%; left:25%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:75%; left:65%;">@SSC_JOURNEY2</div>
+  <div class="ssc-wm" style="top:90%; left:10%;">@SSC_JOURNEY2</div>
+</div>
+
+<!-- Student Name Input -->
+<div id="studentNameContainer">
+  <input
+    type="text"
+    id="studentName"
+    placeholder="Enter your full name (required to submit)"
+    style="width:100%;padding:12px 16px;font-size:15px;border:2px solid #2ec4b6;border-radius:8px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,0.1)"
+  />
+</div>
 
 <!-- TELEGRAM JOIN OVERLAY WITH CLOSE BUTTON -->
 <style>
@@ -688,7 +790,6 @@ function renderMath(){{
   }}
 }}
 
-
 function normalizeMathForQuiz(container) {{
   if (!container) return;
 
@@ -705,7 +806,6 @@ function normalizeMathForQuiz(container) {{
       return '\\\\(' + math + '\\\\)';
     }});
 }}
-
 
 function _hx(s){{
   let h = 0;
@@ -729,7 +829,24 @@ const QUIZ_TITLE = "{quiz_name}";
 const QUIZ_STATE_KEY = "ssc_quiz_state_{quiz_name}";
 const QUIZ_RESULT_KEY = "ssc_quiz_result_{quiz_name}";
 
+// Tamper detection for join section
+const banner = document.getElementById("ssc-join-title");
+const joinBtn = document.getElementById("ssc-join-open");
 
+if (!banner || !joinBtn) {{
+  __QUIZ_OK = false;
+  document.body.innerHTML = "";
+  throw new Error("JOIN_COMPONENT_MISSING");
+}}
+
+const EXPECTED_HASH = 197247123;  // Hash value for tamper detection
+
+if (_hx(banner.textContent.trim() + "|" + joinBtn.href) !== EXPECTED_HASH) {{
+  __QUIZ_OK = false;
+  document.body.innerHTML =
+    "<h2 style='text-align:center;margin-top:60px;color:#c82d3f'>Quiz blocked (modified join section)</h2>";
+  throw new Error("JOIN_TAMPERED");
+}}
 
 // 🔥 FIREBASE: SAVE ONLY FIRST ATTEMPT (ADMIN DATA)
 function saveResultFirebase(payload) {{
@@ -747,6 +864,7 @@ function saveResultFirebase(payload) {{
     return ref.set(payload);
   }});
 }}
+
 function saveAttemptHistory(payload) {{
   const ref = db.ref(
     "attempt_history/" +
@@ -855,10 +973,6 @@ function getLiveRankForAttempt(quizId, attempt) {{
 /* data from Jinja */
 const QUESTIONS = {questions_array};
 
-
-
-
-
 let current = 0;
 let answers = {{}};            // {{ questionId: "1", ... }}
 let markedForReview = new Set(); // Set of question indices marked for review
@@ -914,7 +1028,6 @@ function rebindResultHeaderActions() {{
   }});
 }}
 
-
 /* format mm:ss */
 function fmt(s){{
   const m = Math.floor(s/60);
@@ -964,6 +1077,7 @@ function init(){{
       // hide quiz UI
       el("quizCard").style.display = "none";
       el("floatBar").style.display = "none";
+      document.getElementById("studentNameContainer")?.style.setProperty("display", "none");
 
       // restore results
       const res = document.getElementById("results");
@@ -980,7 +1094,6 @@ function init(){{
       return; // ❌ STOP QUIZ INIT
     }}
   }}
-
 
   // 🔁 NORMAL QUIZ RESUME FLOW
   const saved = localStorage.getItem(QUIZ_STATE_KEY);
@@ -1001,9 +1114,6 @@ function init(){{
   highlightPalette();
   renderMath();
 }}
-
-
-
 
 /* render question */
 function renderQuestion(i){{
@@ -1172,13 +1282,18 @@ function showAttempt(submittedAt) {{
     document.getElementById("live-percentile").textContent =
       `${{data.percentile}}%`;
   }});
-
 }}
-
-
 
 /* Submit flow */
 function submitQuiz(){{
+  // 🔒 NAME CHECK
+  const nameInput = document.getElementById("studentName");
+  if (!nameInput || !nameInput.value.trim()) {{
+    alert("Please enter your name to submit quiz");
+    nameInput?.focus();
+    return; // ❌ STOP SUBMIT, GO BACK TO QUIZ
+  }}
+
   // stop timer
   if(timerInterval) clearInterval(timerInterval);
   const timeTakenSeconds = TOTAL_TIME_SECONDS - seconds;
@@ -1210,7 +1325,6 @@ function submitQuiz(){{
   const attempted = Object.keys(answers).length;
   const unattempted = QUESTIONS.length - attempted;
   const accuracy = attempted ? ((correct/attempted) * 100).toFixed(1) : "0.0";
-
 
   // build review HTML
   let reviewHTML = `<div class="card"><h3 style="color:var(--accent);margin:0 0 10px">Results Summary</h3>
@@ -1262,102 +1376,95 @@ function submitQuiz(){{
   el("results").style.display = "block";
 
   el("quizCard").style.display = "none";
-  // hide bottom nav
+  // hide bottom nav and name input
   el("floatBar").style.display = "none";
+  document.getElementById("studentNameContainer").style.display = "none";
   LAST_RESULT_HTML = reviewHTML; // ✅ FIX: store latest result immediately
-
 
   document.getElementById("mainHeader")?.style.setProperty("display", "block");
 
+  const timeTaken = timeTakenSeconds;
 
+  const firebasePayload = {{
+    name: document.getElementById("studentName")?.value || "Anonymous",
+    score: totalMarks,
+    total: maxTotalMarks,
+    correct,
+    wrong,
+    unattempted,
+    timeTaken,
+    quizId: "{quiz_name}",
+    deviceId: DEVICE_ID,
+    submittedAt: Date.now(),
+    answers: QUESTIONS.map((q, i) => {{
+      const qid = q.id ?? i;
+      return {{
+        question: q.question,
+        options: [
+          q.option_1,
+          q.option_2,
+          q.option_3,
+          q.option_4,
+          q.option_5
+        ].filter(Boolean),
+        correctAnswer: String(q.answer),
+        userAnswer: answers[qid] ?? null
+      }};
+    }})
+  }};
 
+  // 🔥 ADMIN DATA (first attempt only)
+  saveResultFirebase(firebasePayload)
+    .finally(() => {{
+      saveAttemptHistory(firebasePayload);
 
-const timeTaken = timeTakenSeconds;
+      // 🔥 RESULT PAGE (always show rank, even on reattempt)
+      getRankAndPercentile("{quiz_name}", totalMarks, timeTaken, firebasePayload.submittedAt)
+        .then(data => {{
 
-const firebasePayload = {{
-  name: "Anonymous",
-  score: totalMarks,
-  total: maxTotalMarks,
-  correct,
-  wrong,
-  unattempted,
-  timeTaken,
-  quizId: "{quiz_name}",
-  deviceId: DEVICE_ID,
-  submittedAt: Date.now(),
-  answers: QUESTIONS.map((q, i) => {{
-    const qid = q.id ?? i;
-    return {{
-      question: q.question,
-      options: [
-        q.option_1,
-        q.option_2,
-        q.option_3,
-        q.option_4,
-        q.option_5
-      ].filter(Boolean),
-      correctAnswer: String(q.answer),
-      userAnswer: answers[qid] ?? null
-    }};
-  }})
-}};
+          firebasePayload.rank = data.rank;
+          firebasePayload.percentile = data.percentile;
 
+          // 🔥 UPDATE THIS ATTEMPT WITH RANK & PERCENTILE
+          db.ref(
+          "attempt_history/" +
+          firebasePayload.quizId + "/" +
+          firebasePayload.deviceId + "/" +
+          firebasePayload.submittedAt
+          ).update({{
+          rank: data.rank,
+          percentile: data.percentile
+          }});
 
-// 🔥 ADMIN DATA (first attempt only)
-saveResultFirebase(firebasePayload)
-  .finally(() => {{
-    saveAttemptHistory(firebasePayload);
+          const rankHTML = `
+            <div class="stat">
+              <h4>Rank</h4>
+              <p>${{data.rank}} / ${{data.total}}</p>
+            </div>
+            <div class="stat">
+              <h4>Percentile</h4>
+              <p>${{data.percentile}}%</p>
+            </div>
+          `;
 
-    // 🔥 RESULT PAGE (always show rank, even on reattempt)
-    getRankAndPercentile("{quiz_name}", totalMarks, timeTaken, firebasePayload.submittedAt)
-      .then(data => {{
+          document
+            .querySelector("#results .stats")
+            ?.insertAdjacentHTML("beforeend", rankHTML);
+            setTimeout(() => {{
+              const finalResultHTML = document.getElementById("results").innerHTML;
+              const headerHTML = document.getElementById("headerControls").innerHTML;
 
-        firebasePayload.rank = data.rank;
-        firebasePayload.percentile = data.percentile;
+              LAST_RESULT_HTML = finalResultHTML;
 
-
-
-        // 🔥 UPDATE THIS ATTEMPT WITH RANK & PERCENTILE
-        db.ref(
-        "attempt_history/" +
-        firebasePayload.quizId + "/" +
-        firebasePayload.deviceId + "/" +
-        firebasePayload.submittedAt
-        ).update({{
-        rank: data.rank,
-        percentile: data.percentile
+              // 🔐 SAVE COMPLETE RESULT + HEADER STATE
+              localStorage.setItem(QUIZ_RESULT_KEY, JSON.stringify({{
+                submitted: true,
+                resultHTML: finalResultHTML,
+                headerHTML: headerHTML
+              }}));
+            }}, 0);
         }});
-
-        const rankHTML = `
-          <div class="stat">
-            <h4>Rank</h4>
-            <p>${{data.rank}} / ${{data.total}}</p>
-          </div>
-          <div class="stat">
-            <h4>Percentile</h4>
-            <p>${{data.percentile}}%</p>
-          </div>
-        `;
-
-        document
-          .querySelector("#results .stats")
-          ?.insertAdjacentHTML("beforeend", rankHTML);
-          setTimeout(() => {{
-            const finalResultHTML = document.getElementById("results").innerHTML;
-            const headerHTML = document.getElementById("headerControls").innerHTML;
-
-            LAST_RESULT_HTML = finalResultHTML;
-
-            // 🔐 SAVE COMPLETE RESULT + HEADER STATE
-            localStorage.setItem(QUIZ_RESULT_KEY, JSON.stringify({{
-              submitted: true,
-              resultHTML: finalResultHTML,
-              headerHTML: headerHTML
-            }}));
-          }}, 0);
-      }});
-  }});
-
+    }});
 
   // replace header controls with results controls (Re-Attempt, Download, Print)
   const header = el("headerControls");
@@ -1395,7 +1502,6 @@ saveResultFirebase(firebasePayload)
     loadPreviousAttempts("{quiz_name}", DEVICE_ID);
   }};
 
-
   const backBtn = document.createElement("button");
   backBtn.className = "btn-ghost";
   backBtn.textContent = "Back to Latest Result";
@@ -1403,7 +1509,6 @@ saveResultFirebase(firebasePayload)
     document.getElementById("results").innerHTML = LAST_RESULT_HTML;
     document.getElementById("results").style.display = "block";
   }};
-
 
   right.appendChild(prevBtn);
   right.appendChild(backBtn);
@@ -1581,9 +1686,19 @@ function togglePalette(){{
     }}
   }});
 
+  // Ensure watermark always exists
+  function ensureWatermark(){{
+    if(!document.getElementById("ssc-watermark")){{
+      document.body.innerHTML = "";
+      alert("Quiz file modified");
+      throw new Error("WATERMARK_REMOVED");
+    }}
+  }}
+
+  ensureWatermark();
+  setInterval(ensureWatermark, 2000);
+
 }})();
-
-
 
 function filterResults(type){{
   const cards = document.querySelectorAll(".result-q");
@@ -1628,7 +1743,7 @@ window.addEventListener("DOMContentLoaded", init);
     
     return html
 
-# Bot Handlers
+# Bot Handlers (keep all existing handlers from deepseek file)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message"""
     update_activity()
@@ -1979,7 +2094,8 @@ Option 2 Hindi
 Answer: (a)
 
 *Features:*
-• Interactive quiz interface
+• Interactive quiz interface with watermark
+• Student name input (required)
 • Timer with countdown
 • Test/Quiz mode toggle
 • Rank and percentile system
@@ -1989,6 +2105,7 @@ Answer: (a)
 • Hindi/English bilingual support
 • Mark for review feature
 • Question palette with colors
+• Tamper protection
 
 *No Sleep System:* 
 This bot has an integrated keep-alive system that prevents it from sleeping on platforms like Render.
@@ -2007,7 +2124,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_text = (
         f"🤖 *Bot Status*\n\n"
         f"• Status: ✅ Running\n"
-        f"• Last activity: {datetime.fromtimestamp(last_activity).strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"• Last activity: {datetime.fromtimestamp(last_activity).strftime('%Y-%m-d %H:%M:%S')}\n"
         f"• Active users: {len(user_data)}\n"
         f"• Active processes: {len(user_progress)}\n"
         f"• Render URL: {RENDER_APP_URL if RENDER_APP_URL else 'Not set'}\n"
