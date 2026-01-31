@@ -110,129 +110,123 @@ def update_activity():
     last_activity = time.time()
 
 def parse_txt_file(content):
-    """Parse TXT file with Q.1, Q.2 format"""
+    """Parse various TXT file formats and extract questions"""
     questions = []
     
-    # Clean up the content - remove any leading/trailing whitespace
-    content = content.strip()
+    # Split by double newlines or question patterns
+    blocks = re.split(r'\n\s*\n|(?=Q\.\d+|\d+\.\s*[A-Z])', content.strip())
     
-    # Split the content by question markers
-    # Use regex to split at Q. followed by a number and dot
-    question_blocks = re.split(r'(?=\nQ\.\d+\.)', content, flags=re.IGNORECASE | re.MULTILINE)
-    
-    # The first block might be empty or contain header, so check each block
-    for block in question_blocks:
+    for block in blocks:
         block = block.strip()
         if not block:
             continue
             
-        # Only process blocks that start with Q. followed by a number
-        if not re.match(r'^Q\.\d+\.', block, re.IGNORECASE):
-            continue
-        
         lines = [line.strip() for line in block.split('\n') if line.strip()]
-        
-        if len(lines) < 4:  # Need at least question, 2 options, and answer
+        if len(lines) < 3:  # Minimum lines for a question
             continue
         
         question = {
             "question": "",
             "option_1": "", "option_2": "", "option_3": "", "option_4": "", "option_5": "",
             "answer": "",
-            "solution_text": "",
-            "correct_score": "3",
-            "negative_score": "1",
-            "deleted": "0",
-            "difficulty_level": "0",
-            "option_image_1": "", "option_image_2": "", "option_image_3": "",
-            "option_image_4": "", "option_image_5": "",
-            "question_image": "",
-            "solution_heading": "",
-            "solution_image": "",
-            "solution_video": "",
-            "sortingparam": "0.00"
+            "solution_text": ""
         }
         
-        # Extract question number and text from first line
-        first_line = lines[0]
-        # Remove Q.1. pattern from beginning
-        question_text_match = re.match(r'^Q\.\d+\.\s*(.+)$', first_line, re.IGNORECASE)
+        current_line = 0
         
-        if question_text_match:
-            question_text_lines = [question_text_match.group(1)]
+        # Detect format and parse accordingly
+        # Format 1: "1. Question" or "Q.1 Question"
+        if re.match(r'^(?:\d+\.\s*|Q\.\d+\s+)', lines[0]):
+            # Extract question (remove number prefix)
+            question_text = re.sub(r'^(?:\d+\.\s*|Q\.\d+\s+)', '', lines[0])
+            question_lines = [question_text]
+            current_line = 1
+            
+            # Check if next line is Hindi question (not starting with option pattern)
+            while (current_line < len(lines) and 
+                   not re.match(r'^[a-e]\)\s*|^\([a-e]\)\s*|^[a-e]\.\s*', lines[current_line], re.IGNORECASE)):
+                question_lines.append(lines[current_line])
+                current_line += 1
         else:
-            question_text_lines = [first_line]
+            # Format without question number
+            question_lines = []
+            while (current_line < len(lines) and 
+                   not re.match(r'^[a-e]\)\s*|^\([a-e]\)\s*|^[a-e]\.\s*', lines[current_line], re.IGNORECASE)):
+                question_lines.append(lines[current_line])
+                current_line += 1
         
-        line_idx = 1
+        question["question"] = '<br>'.join(question_lines)
         
-        # Collect all lines until we hit options
-        while line_idx < len(lines):
-            current_line = lines[line_idx]
-            
-            # Check if this line starts an option (a), b), (c), etc.)
-            if re.match(r'^\(?[a-e]\)', current_line, re.IGNORECASE):
-                break
-                
-            # Check if this is the answer line
-            if current_line.startswith('Answer:'):
-                break
-                
-            question_text_lines.append(current_line)
-            line_idx += 1
-        
-        question["question"] = '<br>'.join(question_text_lines)
-        
-        # Now extract options
+        # Extract options (4-5 options)
         option_count = 0
-        while line_idx < len(lines) and option_count < 5:
-            current_line = lines[line_idx]
-            
-            # Check for option pattern
-            option_match = re.match(r'^\(?([a-e])\)?\s*(.+)$', current_line, re.IGNORECASE)
-            if option_match:
-                option_key = f"option_{option_count + 1}"
-                option_letter = option_match.group(1).lower()
-                option_text = option_match.group(2).strip()
-                
-                # Map option letter to number
-                answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
-                option_number = answer_map.get(option_letter, str(option_count + 1))
-                
-                # Store with the original format (a) or a)
-                if current_line.startswith('('):
-                    question[option_key] = f"({option_letter}) {option_text}"
-                else:
-                    question[option_key] = f"{option_letter}) {option_text}"
-                
-                option_count += 1
-            elif current_line.startswith('Answer:'):
-                break
-                
-            line_idx += 1
+        option_pattern = re.compile(r'^([a-e])[\)\.]\s*|^\(([a-e])\)\s*', re.IGNORECASE)
         
-        # Extract answer
-        for i in range(line_idx, len(lines)):
-            if lines[i].startswith('Answer:'):
-                answer_line = lines[i]
-                # Look for (a), (b), etc. in the answer line
-                match = re.search(r'\(([a-e])\)', answer_line, re.IGNORECASE)
-                if not match:
-                    # Try without parentheses
-                    match = re.search(r'Answer:\s*([a-e])', answer_line, re.IGNORECASE)
+        while (current_line < len(lines) and option_count < 5 and
+               (option_pattern.match(lines[current_line]) or 
+                re.match(r'^Correct|^Answer:|^ex:', lines[current_line], re.IGNORECASE) is None)):
+            
+            if option_pattern.match(lines[current_line]):
+                option_key = f"option_{option_count + 1}"
+                option_text = lines[current_line]
+                current_line += 1
                 
+                # Add next line if it's Hindi text (doesn't start with option pattern, Correct, or ex:)
+                if (current_line < len(lines) and 
+                    not re.match(r'^[a-e]\)|^\([a-e]\)|^[a-e]\.|^Correct|^Answer:|^ex:', 
+                                lines[current_line], re.IGNORECASE)):
+                    option_text += f"<br>{lines[current_line]}"
+                    current_line += 1
+                
+                question[option_key] = option_text
+                option_count += 1
+            else:
+                current_line += 1
+        
+        # Extract correct answer
+        while current_line < len(lines):
+            line = lines[current_line]
+            # Check for various answer formats
+            if re.match(r'^Correct\s*(?:option)?\s*[:-]', line, re.IGNORECASE):
+                match = re.search(r'[:-]\s*([a-e])', line, re.IGNORECASE)
                 if match:
                     ans = match.group(1).lower()
                     answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
                     question["answer"] = answer_map.get(ans, '1')
-                break
+            elif re.match(r'^Answer\s*[:-]', line, re.IGNORECASE):
+                match = re.search(r'\(([a-e])\)', line, re.IGNORECASE)
+                if not match:
+                    match = re.search(r'[:-]\s*([a-e])', line, re.IGNORECASE)
+                if match:
+                    ans = match.group(1).lower()
+                    answer_map = {'a': '1', 'b': '2', 'c': '3', 'd': '4', 'e': '5'}
+                    question["answer"] = answer_map.get(ans, '1')
+            current_line += 1
         
-        # Only add if we have a valid question
-        if question["question"] and question["option_1"]:
+        # Extract explanation
+        solution_lines = []
+        for i in range(len(lines)):
+            if re.match(r'^ex:', lines[i], re.IGNORECASE):
+                solution_lines.append(re.sub(r'^ex:\s*', '', lines[i], flags=re.IGNORECASE))
+        
+        question["solution_text"] = '<br>'.join(solution_lines)
+        
+        # Add metadata
+        question["correct_score"] = "3"
+        question["negative_score"] = "1"
+        question["deleted"] = "0"
+        question["difficulty_level"] = "0"
+        question["option_image_1"] = question["option_image_2"] = question["option_image_3"] = ""
+        question["option_image_4"] = question["option_image_5"] = ""
+        question["question_image"] = ""
+        question["solution_heading"] = ""
+        question["solution_image"] = ""
+        question["solution_video"] = ""
+        question["sortingparam"] = "0.00"
+        
+        # Only add if we have question and at least 2 options
+        if question["question"] and (question["option_1"] or question["option_2"]):
             questions.append(question)
-        else:
-            logger.warning(f"Skipping incomplete question: {question['question'][:50]}...")
     
-    logger.info(f"Successfully parsed {len(questions)} questions")
     return questions
 
 def generate_html_quiz(quiz_data):
