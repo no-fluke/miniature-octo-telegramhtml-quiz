@@ -81,22 +81,44 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(status).encode())
         elif self.path.startswith('/scoreboard/'):
             # API endpoint for scoreboard
-            quiz_id = self.path.split('/')[-1]
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
             self.end_headers()
             
             try:
+                quiz_id = self.path.split('/')[-1]
+                if not quiz_id:
+                    self.wfile.write(json.dumps({"error": "Quiz ID required"}).encode())
+                    return
+                    
                 # Fetch scoreboard data
                 scoreboard_data = get_scoreboard_data(quiz_id)
                 self.wfile.write(json.dumps(scoreboard_data).encode())
             except Exception as e:
                 logger.error(f"Error fetching scoreboard: {e}")
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
+        
+        elif self.path == '/options':
+            # Handle preflight requests
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
+    
+    def do_OPTIONS(self):
+        # Handle CORS preflight
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
     
     def log_message(self, format, *args):
         return
@@ -145,49 +167,74 @@ def get_scoreboard_data(quiz_id, limit=50):
         if response.status_code == 200:
             data = response.json()
             if not data:
-                return {"quiz_id": quiz_id, "scores": [], "total_attempts": 0}
+                return {
+                    "quiz_id": quiz_id, 
+                    "scores": [], 
+                    "total_attempts": 0,
+                    "averages": {"score": 0, "time": 0, "accuracy": 0},
+                    "timestamp": datetime.now().isoformat()
+                }
             
             all_attempts = []
             
             # Process all attempts from all devices
             for device_id, attempts in data.items():
                 if isinstance(attempts, dict):
-                    for attempt_data in attempts.values():
+                    for attempt_timestamp, attempt_data in attempts.items():
                         if isinstance(attempt_data, dict):
-                            # Ensure required fields exist
-                            attempt_data.setdefault('name', 'Anonymous')
-                            attempt_data.setdefault('score', 0)
-                            attempt_data.setdefault('timeTaken', 0)
-                            attempt_data.setdefault('submittedAt', 0)
-                            attempt_data.setdefault('correct', 0)
-                            attempt_data.setdefault('wrong', 0)
-                            attempt_data.setdefault('accuracy', 0)
-                            attempt_data.setdefault('rank', 999)
-                            attempt_data.setdefault('percentile', 0)
+                            # Ensure required fields exist with proper defaults
+                            attempt = {
+                                'name': attempt_data.get('name', 'Anonymous'),
+                                'score': float(attempt_data.get('score', 0)),
+                                'timeTaken': int(attempt_data.get('timeTaken', 0)),
+                                'submittedAt': int(attempt_data.get('submittedAt', 0)),
+                                'correct': int(attempt_data.get('correct', 0)),
+                                'wrong': int(attempt_data.get('wrong', 0)),
+                                'accuracy': float(attempt_data.get('accuracy', 0)),
+                                'rank': int(attempt_data.get('rank', 999)),
+                                'percentile': float(attempt_data.get('percentile', 0)),
+                                'deviceId': device_id
+                            }
                             
-                            # Calculate accuracy if not present
-                            if 'accuracy' not in attempt_data or attempt_data['accuracy'] == 0:
-                                total_attempted = attempt_data.get('correct', 0) + attempt_data.get('wrong', 0)
-                                attempt_data['accuracy'] = round((attempt_data.get('correct', 0) / total_attempted * 100) if total_attempted > 0 else 0, 1)
+                            # Calculate accuracy if not present or 0
+                            if attempt['accuracy'] == 0:
+                                total_attempted = attempt['correct'] + attempt['wrong']
+                                if total_attempted > 0:
+                                    attempt['accuracy'] = round((attempt['correct'] / total_attempted) * 100, 1)
                             
-                            all_attempts.append(attempt_data)
+                            all_attempts.append(attempt)
+            
+            if not all_attempts:
+                return {
+                    "quiz_id": quiz_id,
+                    "scores": [],
+                    "total_attempts": 0,
+                    "averages": {"score": 0, "time": 0, "accuracy": 0},
+                    "timestamp": datetime.now().isoformat()
+                }
             
             # Sort by score (descending), then by time (ascending)
-            all_attempts.sort(key=lambda x: (-x.get('score', 0), x.get('timeTaken', 0)))
+            all_attempts.sort(key=lambda x: (-x['score'], x['timeTaken']))
             
             # Calculate ranks and percentiles
             total_attempts = len(all_attempts)
             for i, attempt in enumerate(all_attempts):
                 attempt['rank'] = i + 1
-                attempt['percentile'] = round((i / total_attempts) * 100, 2) if total_attempts > 0 else 0
+                # Percentile: (number of people below you / total) * 100
+                below = len([a for a in all_attempts if a['score'] < attempt['score'] or 
+                           (a['score'] == attempt['score'] and a['timeTaken'] > attempt['timeTaken'])])
+                attempt['percentile'] = round((below / total_attempts) * 100, 2) if total_attempts > 0 else 0
             
             # Take top N attempts
             top_attempts = all_attempts[:limit]
             
             # Calculate averages
-            avg_score = round(sum(a.get('score', 0) for a in top_attempts) / len(top_attempts), 1) if top_attempts else 0
-            avg_time = round(sum(a.get('timeTaken', 0) for a in top_attempts) / len(top_attempts), 1) if top_attempts else 0
-            avg_accuracy = round(sum(a.get('accuracy', 0) for a in top_attempts) / len(top_attempts), 1) if top_attempts else 0
+            if top_attempts:
+                avg_score = round(sum(a['score'] for a in top_attempts) / len(top_attempts), 1)
+                avg_time = round(sum(a['timeTaken'] for a in top_attempts) / len(top_attempts), 1)
+                avg_accuracy = round(sum(a['accuracy'] for a in top_attempts) / len(top_attempts), 1)
+            else:
+                avg_score = avg_time = avg_accuracy = 0
             
             return {
                 "quiz_id": quiz_id,
@@ -201,11 +248,26 @@ def get_scoreboard_data(quiz_id, limit=50):
                 "timestamp": datetime.now().isoformat()
             }
         else:
-            return {"quiz_id": quiz_id, "scores": [], "total_attempts": 0, "error": "Failed to fetch data"}
+            logger.error(f"Firebase returned status {response.status_code}")
+            return {
+                "quiz_id": quiz_id,
+                "scores": [],
+                "total_attempts": 0,
+                "averages": {"score": 0, "time": 0, "accuracy": 0},
+                "error": f"Failed to fetch data: {response.status_code}",
+                "timestamp": datetime.now().isoformat()
+            }
             
     except Exception as e:
         logger.error(f"Error getting scoreboard data: {e}")
-        return {"quiz_id": quiz_id, "scores": [], "total_attempts": 0, "error": str(e)}
+        return {
+            "quiz_id": quiz_id,
+            "scores": [],
+            "total_attempts": 0,
+            "averages": {"score": 0, "time": 0, "accuracy": 0},
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 def parse_txt_file(content):
     """Parse various TXT file formats and extract questions"""
@@ -961,9 +1023,9 @@ mjx-container {{
   async>
 </script>
 
-<!-- 🔥 FIREBASE SDK -->
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<!-- 🔥 FIREBASE SDK v8 (compatible) -->
+<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
 
 <script>
   const firebaseConfig = {{
@@ -982,7 +1044,7 @@ mjx-container {{
   }}
 
   // 🔥 Realtime Database reference
-  const db = firebase.database();
+  const database = firebase.database();
 </script>
 
 </head>
@@ -1214,6 +1276,9 @@ mjx-container {{
 </div>
 
 <script>
+// 🔥 SCOREBOARD BASE URL
+const SCOREBOARD_BASE_URL = "{scoreboard_base_url}";
+
 function renderMath(){{
   if (window.MathJax && MathJax.typesetPromise) {{
     MathJax.typesetPromise();
@@ -1278,133 +1343,162 @@ if (_hx(banner.textContent.trim() + "|" + joinBtn.href) !== EXPECTED_HASH) {{
   throw new Error("JOIN_TAMPERED");
 }}
 
+/* format mm:ss */
+function fmt(s){{
+  const m = Math.floor(s/60);
+  const sec = s%60;
+  return `${{String(m).padStart(2,"0")}}:${{String(sec).padStart(2,"0")}}`;
+}}
+
 // 🔥 FIREBASE: SAVE ONLY FIRST ATTEMPT (ADMIN DATA)
 function saveResultFirebase(payload) {{
-  const ref = db.ref(
-    "quiz_results/" + payload.quizId + "/" + payload.deviceId
-  );
-
-  return ref.once("value").then(snap => {{
-    if (snap.exists()) {{
-      // ❌ already attempted → DO NOT overwrite admin data
-      return false;
-    }}
-
-    // ✅ first attempt only
-    return ref.set(payload);
+  return new Promise((resolve, reject) => {{
+    const ref = database.ref("quiz_results/" + payload.quizId + "/" + payload.deviceId);
+    
+    ref.once('value').then(snapshot => {{
+      if (snapshot.exists()) {{
+        // ❌ already attempted → DO NOT overwrite admin data
+        resolve(false);
+      }} else {{
+        // ✅ first attempt only
+        ref.set(payload).then(() => {{
+          resolve(true);
+        }}).catch(error => {{
+          reject(error);
+        }});
+      }}
+    }}).catch(error => {{
+      reject(error);
+    }});
   }});
 }}
 
 function saveAttemptHistory(payload) {{
-  const ref = db.ref(
-    "attempt_history/" +
-    payload.quizId + "/" +
-    payload.deviceId + "/" +
-    payload.submittedAt
-  );
-  return ref.set(payload);
+  return new Promise((resolve, reject) => {{
+    const ref = database.ref(
+      "attempt_history/" +
+      payload.quizId + "/" +
+      payload.deviceId + "/" +
+      payload.submittedAt
+    );
+    
+    ref.set(payload).then(() => {{
+      resolve(true);
+    }}).catch(error => {{
+      reject(error);
+    }});
+  }});
 }}
 
 // 🔥 FIREBASE: RANK + PERCENTILE (SCORE ↓, TIME ↑)
 function getRankAndPercentile(quizId, myScore, myTime, mySubmittedAt) {{
-  return db
-    .ref("attempt_history/" + quizId)
-    .once("value")
-    .then(snapshot => {{
-      const quizData = snapshot.val() || {{}};
-      let attempts = [];
+  return new Promise((resolve, reject) => {{
+    database.ref("attempt_history/" + quizId)
+      .once('value')
+      .then(snapshot => {{
+        const quizData = snapshot.val() || {{}};
+        let attempts = [];
 
-      // collect ALL attempts from ALL devices
-      Object.values(quizData).forEach(deviceAttempts => {{
-        Object.values(deviceAttempts).forEach(attempt => {{
-          attempts.push(attempt);
+        // collect ALL attempts from ALL devices
+        Object.values(quizData).forEach(deviceAttempts => {{
+          Object.values(deviceAttempts).forEach(attempt => {{
+            attempts.push(attempt);
+          }});
         }});
-      }});
 
-      // sort: score desc, time asc
-      attempts.sort((a, b) => {{
-        if (b.score !== a.score) return b.score - a.score;
-        return a.timeTaken - b.timeTaken;
-      }});
+        // sort: score desc, time asc
+        attempts.sort((a, b) => {{
+          if (b.score !== a.score) return b.score - a.score;
+          return a.timeTaken - b.timeTaken;
+        }});
 
-      const total = attempts.length;
+        const total = attempts.length;
 
-      let rank = total + 1;
-      for (let i = 0; i < attempts.length; i++) {{
-        if (
-          attempts[i].score === myScore &&
-          attempts[i].timeTaken === myTime &&
-          attempts[i].submittedAt === mySubmittedAt
-        ) {{
-
-          rank = i + 1;
-          break;
+        let rank = total + 1;
+        for (let i = 0; i < attempts.length; i++) {{
+          if (
+            attempts[i].score === myScore &&
+            attempts[i].timeTaken === myTime &&
+            attempts[i].submittedAt === mySubmittedAt
+          ) {{
+            rank = i + 1;
+            break;
+          }}
         }}
-      }}
 
-      const below = attempts.filter(
-        a =>
-          a.score < myScore ||
-          (a.score === myScore && a.timeTaken > myTime)
-      ).length;
+        const below = attempts.filter(
+          a =>
+            a.score < myScore ||
+            (a.score === myScore && a.timeTaken > myTime)
+        ).length;
 
-      const percentile = total
-        ? ((below / total) * 100).toFixed(2)
-        : "0.00";
+        const percentile = total
+          ? ((below / total) * 100).toFixed(2)
+          : "0.00";
 
-      return {{ rank, percentile, total }};
-    }});
+        resolve({{ rank, percentile, total }});
+      }})
+      .catch(error => {{
+        reject(error);
+      }});
+  }});
 }}
 
 // 🔥 LIVE rank recalculation for PREVIOUS attempts
 function getLiveRankForAttempt(quizId, attempt) {{
-  return db.ref("attempt_history/" + quizId)
-    .once("value")
-    .then(snapshot => {{
-      const quizData = snapshot.val() || {{}};
-      let attempts = [];
+  return new Promise((resolve, reject) => {{
+    database.ref("attempt_history/" + quizId)
+      .once('value')
+      .then(snapshot => {{
+        const quizData = snapshot.val() || {{}};
+        let attempts = [];
 
-      Object.values(quizData).forEach(deviceAttempts => {{
-        Object.values(deviceAttempts).forEach(a => {{
-          attempts.push(a);
+        Object.values(quizData).forEach(deviceAttempts => {{
+          Object.values(deviceAttempts).forEach(a => {{
+            attempts.push(a);
+          }});
         }});
-      }});
 
-      // SAME SORT LOGIC (score ↓, time ↑)
-      attempts.sort((a, b) => {{
-        if (b.score !== a.score) return b.score - a.score;
-        return a.timeTaken - b.timeTaken;
-      }});
+        // SAME SORT LOGIC (score ↓, time ↑)
+        attempts.sort((a, b) => {{
+          if (b.score !== a.score) return b.score - a.score;
+          return a.timeTaken - b.timeTaken;
+        }});
 
-      const total = attempts.length;
+        const total = attempts.length;
 
-      let rank = total;
-      for (let i = 0; i < attempts.length; i++) {{
-        if (attempts[i].submittedAt === attempt.submittedAt) {{
-          rank = i + 1;
-          break;
+        let rank = total;
+        for (let i = 0; i < attempts.length; i++) {{
+          if (attempts[i].submittedAt === attempt.submittedAt) {{
+            rank = i + 1;
+            break;
+          }}
         }}
-      }}
 
-      const below = attempts.filter(
-        a =>
-          a.score < attempt.score ||
-          (a.score === attempt.score && a.timeTaken > attempt.timeTaken)
-      ).length;
+        const below = attempts.filter(
+          a =>
+            a.score < attempt.score ||
+            (a.score === attempt.score && a.timeTaken > attempt.timeTaken)
+        ).length;
 
-      const percentile = total
-        ? ((below / total) * 100).toFixed(2)
-        : "0.00";
+        const percentile = total
+          ? ((below / total) * 100).toFixed(2)
+          : "0.00";
 
-      return {{ rank, percentile, total }};
-    }});
+        resolve({{ rank, percentile, total }});
+      }})
+      .catch(error => {{
+        reject(error);
+      }});
+  }});
 }}
 
 // 📊 EMBEDDED SCOREBOARD FUNCTIONALITY
 function loadEmbeddedScoreboard(quizId) {{
   const resultsDiv = document.getElementById("results");
-  const scoreboardSection = resultsDiv.querySelector(".scoreboard-section");
+  if (!resultsDiv) return;
   
+  const scoreboardSection = resultsDiv.querySelector(".scoreboard-section");
   if (!scoreboardSection) return;
   
   const loadingDiv = scoreboardSection.querySelector(".scoreboard-table-container");
@@ -1412,9 +1506,12 @@ function loadEmbeddedScoreboard(quizId) {{
     loadingDiv.innerHTML = '<div class="loading-scoreboard">Loading scoreboard...</div>';
   }}
   
-  // Fetch scoreboard data
-  fetch(`/scoreboard/${{quizId}}`)
-    .then(response => response.json())
+  // Fetch scoreboard data from our API
+  fetch(`${{SCOREBOARD_BASE_URL}}/scoreboard/${{quizId}}`)
+    .then(response => {{
+      if (!response.ok) throw new Error(`HTTP error! status: ${{response.status}}`);
+      return response.json();
+    }})
     .then(data => {{
       if (data.error) {{
         if (loadingDiv) {{
@@ -1486,7 +1583,11 @@ function displayEmbeddedScoreboard(data) {{
   scores.forEach((score, index) => {{
     const isCurrentUser = score.name === currentUserName;
     const userClass = isCurrentUser ? "current-user" : "";
-    const date = new Date(score.submittedAt).toLocaleDateString('en-IN');
+    const date = new Date(score.submittedAt).toLocaleDateString('en-IN', {{
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    }});
     const time = fmt(score.timeTaken || 0);
     
     let rankHTML = "";
@@ -1610,13 +1711,6 @@ function rebindResultHeaderActions() {{
       }};
     }}
   }});
-}}
-
-/* format mm:ss */
-function fmt(s){{
-  const m = Math.floor(s/60);
-  const sec = s%60;
-  return `${{String(m).padStart(2,"0")}}:${{String(sec).padStart(2,"0")}}`;
 }}
 
 /* Timer */
@@ -1787,8 +1881,8 @@ function loadPreviousAttempts(quizId, deviceId) {{
   document.getElementById("results").style.display = "none";
   document.getElementById("attemptReplay").style.display = "none";
 
-  db.ref("attempt_history/" + quizId + "/" + deviceId)
-    .once("value")
+  database.ref("attempt_history/" + quizId + "/" + deviceId)
+    .once('value')
     .then(snapshot => {{
       const data = snapshot.val();
       if (!data) {{
@@ -2078,7 +2172,7 @@ function submitQuiz(){{
           firebasePayload.percentile = data.percentile;
 
           // 🔥 UPDATE THIS ATTEMPT WITH RANK & PERCENTILE
-          db.ref(
+          database.ref(
           "attempt_history/" +
           firebasePayload.quizId + "/" +
           firebasePayload.deviceId + "/" +
@@ -2389,12 +2483,16 @@ window.addEventListener("DOMContentLoaded", init);
     marks_per_question = quiz_data.get("marks", "3")
     max_total_marks = len(quiz_data["questions"]) * int(marks_per_question)
     
+    # Get the base URL for scoreboard API
+    scoreboard_base_url = RENDER_APP_URL if RENDER_APP_URL else "http://localhost:10000"
+    
     html = template.format(
         quiz_name=quiz_data["name"],
         questions_array=questions_js,
         seconds=seconds,
         marks=marks_per_question,
-        max_total_marks=max_total_marks
+        max_total_marks=max_total_marks,
+        scoreboard_base_url=scoreboard_base_url
     )
     
     return html
