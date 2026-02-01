@@ -7,7 +7,7 @@ import time
 import json
 import random
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler
@@ -22,17 +22,6 @@ logger = logging.getLogger(__name__)
 # Bot configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 RENDER_APP_URL = os.getenv('RENDER_APP_URL', '')
-
-# Firebase configuration
-FIREBASE_CONFIG = {
-    "apiKey": "AIzaSyBWF7Ojso-w0BucbqJylGR7h9eGeDQodzE",
-    "authDomain": "ssc-quiz-rank-percentile.firebaseapp.com",
-    "databaseURL": "https://ssc-quiz-rank-percentile-default-rtdb.firebaseio.com",
-    "projectId": "ssc-quiz-rank-percentile",
-    "storageBucket": "ssc-quiz-rank-percentile.firebasestorage.app",
-    "messagingSenderId": "944635517164",
-    "appId": "1:944635517164:web:62f0cc83892917f225edc9"
-}
 
 # States for conversation
 GETTING_FILE, GETTING_QUIZ_NAME, GETTING_TIME, GETTING_MARKS, GETTING_NEGATIVE, GETTING_CREATOR = range(6)
@@ -79,46 +68,9 @@ class HealthHandler(BaseHTTPRequestHandler):
                 'active_users': len(user_data)
             }
             self.wfile.write(json.dumps(status).encode())
-        elif self.path.startswith('/scoreboard/'):
-            # API endpoint for scoreboard
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-            self.end_headers()
-            
-            try:
-                quiz_id = self.path.split('/')[-1]
-                if not quiz_id:
-                    self.wfile.write(json.dumps({"error": "Quiz ID required"}).encode())
-                    return
-                    
-                # Fetch scoreboard data
-                scoreboard_data = get_scoreboard_data(quiz_id)
-                self.wfile.write(json.dumps(scoreboard_data).encode())
-            except Exception as e:
-                logger.error(f"Error fetching scoreboard: {e}")
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-        
-        elif self.path == '/options':
-            # Handle preflight requests
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
-    
-    def do_OPTIONS(self):
-        # Handle CORS preflight
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
     
     def log_message(self, format, *args):
         return
@@ -156,118 +108,6 @@ def update_activity():
     """Update the last activity timestamp"""
     global last_activity
     last_activity = time.time()
-
-def get_scoreboard_data(quiz_id, limit=50):
-    """Fetch and process scoreboard data from Firebase"""
-    try:
-        # Using requests to access Firebase REST API
-        firebase_url = f"{FIREBASE_CONFIG['databaseURL']}/attempt_history/{quiz_id}.json"
-        response = requests.get(firebase_url, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if not data:
-                return {
-                    "quiz_id": quiz_id, 
-                    "scores": [], 
-                    "total_attempts": 0,
-                    "averages": {"score": 0, "time": 0, "accuracy": 0},
-                    "timestamp": datetime.now().isoformat()
-                }
-            
-            all_attempts = []
-            
-            # Process all attempts from all devices
-            for device_id, attempts in data.items():
-                if isinstance(attempts, dict):
-                    for attempt_timestamp, attempt_data in attempts.items():
-                        if isinstance(attempt_data, dict):
-                            # Ensure required fields exist with proper defaults
-                            attempt = {
-                                'name': attempt_data.get('name', 'Anonymous'),
-                                'score': float(attempt_data.get('score', 0)),
-                                'timeTaken': int(attempt_data.get('timeTaken', 0)),
-                                'submittedAt': int(attempt_data.get('submittedAt', 0)),
-                                'correct': int(attempt_data.get('correct', 0)),
-                                'wrong': int(attempt_data.get('wrong', 0)),
-                                'accuracy': float(attempt_data.get('accuracy', 0)),
-                                'rank': int(attempt_data.get('rank', 999)),
-                                'percentile': float(attempt_data.get('percentile', 0)),
-                                'deviceId': device_id
-                            }
-                            
-                            # Calculate accuracy if not present or 0
-                            if attempt['accuracy'] == 0:
-                                total_attempted = attempt['correct'] + attempt['wrong']
-                                if total_attempted > 0:
-                                    attempt['accuracy'] = round((attempt['correct'] / total_attempted) * 100, 1)
-                            
-                            all_attempts.append(attempt)
-            
-            if not all_attempts:
-                return {
-                    "quiz_id": quiz_id,
-                    "scores": [],
-                    "total_attempts": 0,
-                    "averages": {"score": 0, "time": 0, "accuracy": 0},
-                    "timestamp": datetime.now().isoformat()
-                }
-            
-            # Sort by score (descending), then by time (ascending)
-            all_attempts.sort(key=lambda x: (-x['score'], x['timeTaken']))
-            
-            # Calculate ranks and percentiles
-            total_attempts = len(all_attempts)
-            for i, attempt in enumerate(all_attempts):
-                attempt['rank'] = i + 1
-                # Percentile: (number of people below you / total) * 100
-                below = len([a for a in all_attempts if a['score'] < attempt['score'] or 
-                           (a['score'] == attempt['score'] and a['timeTaken'] > attempt['timeTaken'])])
-                attempt['percentile'] = round((below / total_attempts) * 100, 2) if total_attempts > 0 else 0
-            
-            # Take top N attempts
-            top_attempts = all_attempts[:limit]
-            
-            # Calculate averages
-            if top_attempts:
-                avg_score = round(sum(a['score'] for a in top_attempts) / len(top_attempts), 1)
-                avg_time = round(sum(a['timeTaken'] for a in top_attempts) / len(top_attempts), 1)
-                avg_accuracy = round(sum(a['accuracy'] for a in top_attempts) / len(top_attempts), 1)
-            else:
-                avg_score = avg_time = avg_accuracy = 0
-            
-            return {
-                "quiz_id": quiz_id,
-                "scores": top_attempts,
-                "total_attempts": total_attempts,
-                "averages": {
-                    "score": avg_score,
-                    "time": avg_time,
-                    "accuracy": avg_accuracy
-                },
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            logger.error(f"Firebase returned status {response.status_code}")
-            return {
-                "quiz_id": quiz_id,
-                "scores": [],
-                "total_attempts": 0,
-                "averages": {"score": 0, "time": 0, "accuracy": 0},
-                "error": f"Failed to fetch data: {response.status_code}",
-                "timestamp": datetime.now().isoformat()
-            }
-            
-    except Exception as e:
-        logger.error(f"Error getting scoreboard data: {e}")
-        return {
-            "quiz_id": quiz_id,
-            "scores": [],
-            "total_attempts": 0,
-            "averages": {"score": 0, "time": 0, "accuracy": 0},
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
 
 def parse_txt_file(content):
     """Parse various TXT file formats and extract questions"""
@@ -311,7 +151,7 @@ def parse_txt_file(content):
             # Format without question number
             question_lines = []
             while (current_line < len(lines) and 
-                   not re.match(r'^[a-e]\)\s*|^\([a-e])\)\s*|^[a-e]\.\s*', lines[current_line], re.IGNORECASE)):
+                   not re.match(r'^[a-e]\)\s*|^\([a-e]\)\s*|^[a-e]\.\s*', lines[current_line], re.IGNORECASE)):
                 question_lines.append(lines[current_line])
                 current_line += 1
         
@@ -390,7 +230,7 @@ def parse_txt_file(content):
     return questions
 
 def generate_html_quiz(quiz_data):
-    """Generate HTML quiz from the parsed data with EMBEDDED scoreboard"""
+    """Generate HTML quiz from the parsed data"""
     
     # Read template HTML
     template = """<!doctype html>
@@ -479,292 +319,10 @@ h1{{margin:0;color:var(--accent);font-size:18px}}
 .stat h4{{margin:0;color:var(--accent);font-size:13px}}
 .stat p{{margin:6px 0 0;font-weight:700;font-size:18px}}
 
-/* 🏆 EMBEDDED SCOREBOARD IN RESULTS */
-.scoreboard-section {{
-    margin: 25px 0;
-    padding: 20px;
-    background: linear-gradient(135deg, #f8fafc 0%, #eef2f7 100%);
-    border-radius: 12px;
-    border: 2px solid #e5e7eb;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-}}
-
-.scoreboard-header {{
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 15px;
-    border-bottom: 3px solid var(--accent);
-}}
-
-.scoreboard-title {{
-    font-size: 22px;
-    font-weight: 800;
-    color: var(--accent);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}}
-
-.scoreboard-title::before {{
-    content: "🏆";
-    font-size: 24px;
-}}
-
-.scoreboard-stats {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 15px;
-    margin-bottom: 25px;
-}}
-
-.stat-card {{
-    background: white;
-    padding: 18px 15px;
-    border-radius: 10px;
-    text-align: center;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-    border: 1px solid #e5e7eb;
-    transition: all 0.3s ease;
-}}
-
-.stat-card:hover {{
-    transform: translateY(-3px);
-    box-shadow: 0 8px 16px rgba(0,0,0,0.12);
-}}
-
-.stat-card h3 {{
-    margin: 0 0 10px 0;
-    font-size: 14px;
-    color: var(--muted);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}}
-
-.stat-card .value {{
-    font-size: 28px;
-    font-weight: 800;
-    color: var(--accent);
-    line-height: 1;
-}}
-
-.stat-card .subtext {{
-    font-size: 12px;
-    color: #6b7280;
-    margin-top: 6px;
-    opacity: 0.8;
-}}
-
-.scoreboard-table-container {{
-    overflow-x: auto;
-    border-radius: 10px;
-    border: 1px solid #e5e7eb;
-    background: white;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-}}
-
-.scoreboard-table {{
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 600px;
-}}
-
-.scoreboard-table thead {{
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
-}}
-
-.scoreboard-table th {{
-    color: white;
-    padding: 16px 12px;
-    text-align: left;
-    font-weight: 700;
-    font-size: 14px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-right: 1px solid rgba(255,255,255,0.1);
-}}
-
-.scoreboard-table th:last-child {{
-    border-right: none;
-}}
-
-.scoreboard-table td {{
-    padding: 14px 12px;
-    border-bottom: 1px solid #f3f4f6;
-    font-size: 14px;
-}}
-
-.scoreboard-table tbody tr:nth-child(even) {{
-    background: #f9fafb;
-}}
-
-.scoreboard-table tbody tr:hover {{
-    background: #f0f9ff;
-}}
-
-.scoreboard-table tbody tr.current-user {{
-    background: linear-gradient(135deg, #e6f7ff 0%, #d1ecff 100%);
-    border-left: 4px solid var(--accent);
-    font-weight: 600;
-}}
-
-.scoreboard-table .rank-cell {{
-    text-align: center;
-    font-weight: 800;
-    font-size: 16px;
-    width: 70px;
-}}
-
-.scoreboard-table .medal-1 {{
-    background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
-    color: #000;
-    border-radius: 50%;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 0 auto;
-    font-weight: 900;
-}}
-
-.scoreboard-table .medal-2 {{
-    background: linear-gradient(135deg, #C0C0C0 0%, #A0A0A0 100%);
-    color: #000;
-    border-radius: 50%;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 0 auto;
-    font-weight: 900;
-}}
-
-.scoreboard-table .medal-3 {{
-    background: linear-gradient(135deg, #CD7F32 0%, #A0522D 100%);
-    color: white;
-    border-radius: 50%;
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin: 0 auto;
-    font-weight: 900;
-}}
-
-.scoreboard-table .score-cell {{
-    font-weight: 700;
-    color: var(--accent);
-    text-align: center;
-}}
-
-.scoreboard-table .accuracy-cell {{
-    text-align: center;
-    font-weight: 600;
-}}
-
-.scoreboard-table .time-cell {{
-    text-align: center;
-    font-family: monospace;
-    color: #6b7280;
-}}
-
-.scoreboard-table .date-cell {{
-    text-align: center;
-    font-size: 12px;
-    color: #6b7280;
-}}
-
-.scoreboard-table .percentile-cell {{
-    text-align: center;
-    font-weight: 600;
-    color: var(--purple);
-}}
-
-.legend {{
-    display: flex;
-    gap: 20px;
-    flex-wrap: wrap;
-    margin: 20px 0 10px 0;
-    padding: 15px;
-    background: #f8fafc;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-}}
-
-.legend-item {{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 500;
-}}
-
-.legend-color {{
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-}}
-
-.refresh-btn {{
-    background: var(--info);
-    color: white;
-    border: none;
-    padding: 10px 20px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    transition: all 0.2s;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}}
-
-.refresh-btn:hover {{
-    background: #2980b9;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-}}
-
-.loading-scoreboard {{
-    text-align: center;
-    padding: 40px 20px;
-    color: var(--muted);
-    font-size: 16px;
-}}
-
-.loading-scoreboard::after {{
-    content: "";
-    display: inline-block;
-    width: 24px;
-    height: 24px;
-    margin-left: 12px;
-    border: 3px solid #f3f3f3;
-    border-top: 3px solid var(--accent);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    vertical-align: middle;
-}}
-
-@keyframes spin {{
-    0% {{ transform: rotate(0deg); }}
-    100% {{ transform: rotate(360deg); }}
-}}
-
-.scoreboard-footer {{
-    text-align: center;
-    margin-top: 15px;
-    padding-top: 15px;
-    border-top: 1px solid #e5e7eb;
-    color: #6b7280;
-    font-size: 13px;
-}}
+/* New buttons */
+.btn-mark{{background:var(--purple);color:#fff}}
+.btn-save{{background:var(--info);color:#fff}}
+.btn-clear{{background:var(--warning);color:#fff}}
 
 /* 🔐 COPY & SELECTION BLOCK */
 body {{
@@ -896,39 +454,6 @@ mjx-container {{
     padding: 10px 14px;
     font-size: 14px;
   }}
-  
-  .scoreboard-section {{
-    padding: 15px;
-    margin: 15px 0;
-  }}
-  
-  .scoreboard-stats {{
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-  }}
-  
-  .stat-card {{
-    padding: 12px 10px;
-  }}
-  
-  .stat-card .value {{
-    font-size: 22px;
-  }}
-  
-  .scoreboard-table th,
-  .scoreboard-table td {{
-    padding: 10px 8px;
-    font-size: 12px;
-  }}
-  
-  .scoreboard-table .rank-cell {{
-    width: 50px;
-  }}
-  
-  .legend {{
-    gap: 10px;
-    padding: 10px;
-  }}
 }}
 
 @media (max-width: 480px) {{
@@ -961,23 +486,6 @@ mjx-container {{
   #studentName {{
     padding: 8px 12px;
     font-size: 13px;
-  }}
-  
-  .scoreboard-title {{
-    font-size: 18px;
-  }}
-  
-  .scoreboard-stats {{
-    grid-template-columns: 1fr;
-  }}
-  
-  .scoreboard-table-container {{
-    font-size: 11px;
-  }}
-  
-  .scoreboard-table th,
-  .scoreboard-table td {{
-    padding: 8px 6px;
   }}
 }}
 
@@ -1023,9 +531,9 @@ mjx-container {{
   async>
 </script>
 
-<!-- 🔥 FIREBASE SDK v8 (compatible) -->
-<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+<!-- 🔥 FIREBASE SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
 <script>
   const firebaseConfig = {{
@@ -1044,7 +552,7 @@ mjx-container {{
   }}
 
   // 🔥 Realtime Database reference
-  const database = firebase.database();
+  const db = firebase.database();
 </script>
 
 </head>
@@ -1276,9 +784,6 @@ mjx-container {{
 </div>
 
 <script>
-// 🔥 SCOREBOARD BASE URL
-const SCOREBOARD_BASE_URL = "{scoreboard_base_url}";
-
 function renderMath(){{
   if (window.MathJax && MathJax.typesetPromise) {{
     MathJax.typesetPromise();
@@ -1343,312 +848,126 @@ if (_hx(banner.textContent.trim() + "|" + joinBtn.href) !== EXPECTED_HASH) {{
   throw new Error("JOIN_TAMPERED");
 }}
 
-/* format mm:ss */
-function fmt(s){{
-  const m = Math.floor(s/60);
-  const sec = s%60;
-  return `${{String(m).padStart(2,"0")}}:${{String(sec).padStart(2,"0")}}`;
-}}
-
 // 🔥 FIREBASE: SAVE ONLY FIRST ATTEMPT (ADMIN DATA)
 function saveResultFirebase(payload) {{
-  return new Promise((resolve, reject) => {{
-    const ref = database.ref("quiz_results/" + payload.quizId + "/" + payload.deviceId);
-    
-    ref.once('value').then(snapshot => {{
-      if (snapshot.exists()) {{
-        // ❌ already attempted → DO NOT overwrite admin data
-        resolve(false);
-      }} else {{
-        // ✅ first attempt only
-        ref.set(payload).then(() => {{
-          resolve(true);
-        }}).catch(error => {{
-          reject(error);
-        }});
-      }}
-    }}).catch(error => {{
-      reject(error);
-    }});
+  const ref = db.ref(
+    "quiz_results/" + payload.quizId + "/" + payload.deviceId
+  );
+
+  return ref.once("value").then(snap => {{
+    if (snap.exists()) {{
+      // ❌ already attempted → DO NOT overwrite admin data
+      return false;
+    }}
+
+    // ✅ first attempt only
+    return ref.set(payload);
   }});
 }}
 
 function saveAttemptHistory(payload) {{
-  return new Promise((resolve, reject) => {{
-    const ref = database.ref(
-      "attempt_history/" +
-      payload.quizId + "/" +
-      payload.deviceId + "/" +
-      payload.submittedAt
-    );
-    
-    ref.set(payload).then(() => {{
-      resolve(true);
-    }}).catch(error => {{
-      reject(error);
-    }});
-  }});
+  const ref = db.ref(
+    "attempt_history/" +
+    payload.quizId + "/" +
+    payload.deviceId + "/" +
+    payload.submittedAt
+  );
+  return ref.set(payload);
 }}
 
 // 🔥 FIREBASE: RANK + PERCENTILE (SCORE ↓, TIME ↑)
 function getRankAndPercentile(quizId, myScore, myTime, mySubmittedAt) {{
-  return new Promise((resolve, reject) => {{
-    database.ref("attempt_history/" + quizId)
-      .once('value')
-      .then(snapshot => {{
-        const quizData = snapshot.val() || {{}};
-        let attempts = [];
+  return db
+    .ref("attempt_history/" + quizId)
+    .once("value")
+    .then(snapshot => {{
+      const quizData = snapshot.val() || {{}};
+      let attempts = [];
 
-        // collect ALL attempts from ALL devices
-        Object.values(quizData).forEach(deviceAttempts => {{
-          Object.values(deviceAttempts).forEach(attempt => {{
-            attempts.push(attempt);
-          }});
+      // collect ALL attempts from ALL devices
+      Object.values(quizData).forEach(deviceAttempts => {{
+        Object.values(deviceAttempts).forEach(attempt => {{
+          attempts.push(attempt);
         }});
-
-        // sort: score desc, time asc
-        attempts.sort((a, b) => {{
-          if (b.score !== a.score) return b.score - a.score;
-          return a.timeTaken - b.timeTaken;
-        }});
-
-        const total = attempts.length;
-
-        let rank = total + 1;
-        for (let i = 0; i < attempts.length; i++) {{
-          if (
-            attempts[i].score === myScore &&
-            attempts[i].timeTaken === myTime &&
-            attempts[i].submittedAt === mySubmittedAt
-          ) {{
-            rank = i + 1;
-            break;
-          }}
-        }}
-
-        const below = attempts.filter(
-          a =>
-            a.score < myScore ||
-            (a.score === myScore && a.timeTaken > myTime)
-        ).length;
-
-        const percentile = total
-          ? ((below / total) * 100).toFixed(2)
-          : "0.00";
-
-        resolve({{ rank, percentile, total }});
-      }})
-      .catch(error => {{
-        reject(error);
       }});
-  }});
+
+      // sort: score desc, time asc
+      attempts.sort((a, b) => {{
+        if (b.score !== a.score) return b.score - a.score;
+        return a.timeTaken - b.timeTaken;
+      }});
+
+      const total = attempts.length;
+
+      let rank = total + 1;
+      for (let i = 0; i < attempts.length; i++) {{
+        if (
+          attempts[i].score === myScore &&
+          attempts[i].timeTaken === myTime &&
+          attempts[i].submittedAt === mySubmittedAt
+        ) {{
+
+          rank = i + 1;
+          break;
+        }}
+      }}
+
+      const below = attempts.filter(
+        a =>
+          a.score < myScore ||
+          (a.score === myScore && a.timeTaken > myTime)
+      ).length;
+
+      const percentile = total
+        ? ((below / total) * 100).toFixed(2)
+        : "0.00";
+
+      return {{ rank, percentile, total }};
+    }});
 }}
 
 // 🔥 LIVE rank recalculation for PREVIOUS attempts
 function getLiveRankForAttempt(quizId, attempt) {{
-  return new Promise((resolve, reject) => {{
-    database.ref("attempt_history/" + quizId)
-      .once('value')
-      .then(snapshot => {{
-        const quizData = snapshot.val() || {{}};
-        let attempts = [];
+  return db.ref("attempt_history/" + quizId)
+    .once("value")
+    .then(snapshot => {{
+      const quizData = snapshot.val() || {{}};
+      let attempts = [];
 
-        Object.values(quizData).forEach(deviceAttempts => {{
-          Object.values(deviceAttempts).forEach(a => {{
-            attempts.push(a);
-          }});
+      Object.values(quizData).forEach(deviceAttempts => {{
+        Object.values(deviceAttempts).forEach(a => {{
+          attempts.push(a);
         }});
-
-        // SAME SORT LOGIC (score ↓, time ↑)
-        attempts.sort((a, b) => {{
-          if (b.score !== a.score) return b.score - a.score;
-          return a.timeTaken - b.timeTaken;
-        }});
-
-        const total = attempts.length;
-
-        let rank = total;
-        for (let i = 0; i < attempts.length; i++) {{
-          if (attempts[i].submittedAt === attempt.submittedAt) {{
-            rank = i + 1;
-            break;
-          }}
-        }}
-
-        const below = attempts.filter(
-          a =>
-            a.score < attempt.score ||
-            (a.score === attempt.score && a.timeTaken > attempt.timeTaken)
-        ).length;
-
-        const percentile = total
-          ? ((below / total) * 100).toFixed(2)
-          : "0.00";
-
-        resolve({{ rank, percentile, total }});
-      }})
-      .catch(error => {{
-        reject(error);
       }});
-  }});
-}}
 
-// 📊 EMBEDDED SCOREBOARD FUNCTIONALITY
-function loadEmbeddedScoreboard(quizId) {{
-  const resultsDiv = document.getElementById("results");
-  if (!resultsDiv) return;
-  
-  const scoreboardSection = resultsDiv.querySelector(".scoreboard-section");
-  if (!scoreboardSection) return;
-  
-  const loadingDiv = scoreboardSection.querySelector(".scoreboard-table-container");
-  if (loadingDiv) {{
-    loadingDiv.innerHTML = '<div class="loading-scoreboard">Loading scoreboard...</div>';
-  }}
-  
-  // Fetch scoreboard data from our API
-  fetch(`${{SCOREBOARD_BASE_URL}}/scoreboard/${{quizId}}`)
-    .then(response => {{
-      if (!response.ok) throw new Error(`HTTP error! status: ${{response.status}}`);
-      return response.json();
-    }})
-    .then(data => {{
-      if (data.error) {{
-        if (loadingDiv) {{
-          loadingDiv.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger)">Error: ${{data.error}}</div>`;
+      // SAME SORT LOGIC (score ↓, time ↑)
+      attempts.sort((a, b) => {{
+        if (b.score !== a.score) return b.score - a.score;
+        return a.timeTaken - b.timeTaken;
+      }});
+
+      const total = attempts.length;
+
+      let rank = total;
+      for (let i = 0; i < attempts.length; i++) {{
+        if (attempts[i].submittedAt === attempt.submittedAt) {{
+          rank = i + 1;
+          break;
         }}
-        return;
       }}
-      
-      displayEmbeddedScoreboard(data);
-    }})
-    .catch(error => {{
-      console.error("Error loading scoreboard:", error);
-      if (loadingDiv) {{
-        loadingDiv.innerHTML = `<div style="text-align:center;padding:20px;color:var(--danger)">Failed to load scoreboard. Please try again.</div>`;
-      }}
-    }});
-}}
 
-function displayEmbeddedScoreboard(data) {{
-  const resultsDiv = document.getElementById("results");
-  const scoreboardSection = resultsDiv.querySelector(".scoreboard-section");
-  
-  if (!scoreboardSection) return;
-  
-  const scores = data.scores || [];
-  const totalAttempts = data.total_attempts || 0;
-  const averages = data.averages || {{score: 0, accuracy: 0, time: 0}};
-  
-  // Update stats cards
-  const statCards = scoreboardSection.querySelectorAll(".stat-card .value");
-  if (statCards.length >= 4) {{
-    statCards[0].textContent = totalAttempts;
-    statCards[1].textContent = averages.score || 0;
-    statCards[2].textContent = `${{averages.accuracy || 0}}%`;
-    statCards[3].textContent = fmt(averages.time || 0);
-  }}
-  
-  const tableContainer = scoreboardSection.querySelector(".scoreboard-table-container");
-  if (!tableContainer) return;
-  
-  if (scores.length === 0) {{
-    tableContainer.innerHTML = `
-      <div style="text-align:center;padding:40px;color:var(--muted)">
-        <h3>No scores yet</h3>
-        <p>Be the first to complete this quiz!</p>
-      </div>
-    `;
-    return;
-  }}
-  
-  const currentUserName = document.getElementById("studentName")?.value || "Anonymous";
-  
-  let html = `
-    <table class="scoreboard-table">
-      <thead>
-        <tr>
-          <th class="rank-cell">Rank</th>
-          <th>Name</th>
-          <th class="score-cell">Score</th>
-          <th class="accuracy-cell">Accuracy</th>
-          <th class="time-cell">Time</th>
-          <th class="date-cell">Date</th>
-          <th class="percentile-cell">Percentile</th>
-        </tr>
-      </thead>
-      <tbody>
-  `;
-  
-  scores.forEach((score, index) => {{
-    const isCurrentUser = score.name === currentUserName;
-    const userClass = isCurrentUser ? "current-user" : "";
-    const date = new Date(score.submittedAt).toLocaleDateString('en-IN', {{
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
-    }});
-    const time = fmt(score.timeTaken || 0);
-    
-    let rankHTML = "";
-    if (index === 0) {{
-      rankHTML = '<div class="medal-1">🥇</div>';
-    }} else if (index === 1) {{
-      rankHTML = '<div class="medal-2">🥈</div>';
-    }} else if (index === 2) {{
-      rankHTML = '<div class="medal-3">🥉</div>';
-    }} else {{
-      rankHTML = `<strong>#${{index + 1}}</strong>`;
-    }}
-    
-    // Truncate long names
-    let displayName = score.name || 'Anonymous';
-    if (displayName.length > 20) {{
-      displayName = displayName.substring(0, 17) + '...';
-    }}
-    
-    html += `
-      <tr class="${{userClass}}">
-        <td class="rank-cell">${{rankHTML}}</td>
-        <td>${{displayName}}</td>
-        <td class="score-cell">${{score.score || 0}}</td>
-        <td class="accuracy-cell">${{score.accuracy || 0}}%</td>
-        <td class="time-cell">${{time}}</td>
-        <td class="date-cell">${{date}}</td>
-        <td class="percentile-cell">${{score.percentile || 0}}%</td>
-      </tr>
-    `;
-  }});
-  
-  html += `
-      </tbody>
-    </table>
-  `;
-  
-  tableContainer.innerHTML = html;
-  
-  // Update footer
-  const footer = scoreboardSection.querySelector(".scoreboard-footer");
-  if (footer) {{
-    footer.innerHTML = `Showing top ${{Math.min(scores.length, 50)}} of ${{totalAttempts}} participants • Updated: ${{new Date().toLocaleTimeString([], {{hour: '2-digit', minute:'2-digit'}})}}`;
-  }}
-}}
+      const below = attempts.filter(
+        a =>
+          a.score < attempt.score ||
+          (a.score === attempt.score && a.timeTaken > attempt.timeTaken)
+      ).length;
 
-function refreshScoreboard() {{
-  const refreshBtn = document.querySelector(".refresh-btn");
-  if (refreshBtn) {{
-    refreshBtn.innerHTML = "🔄 Refreshing...";
-    refreshBtn.disabled = true;
-  }}
-  
-  loadEmbeddedScoreboard("{quiz_name}");
-  
-  setTimeout(() => {{
-    if (refreshBtn) {{
-      refreshBtn.innerHTML = "🔄 Refresh Scoreboard";
-      refreshBtn.disabled = false;
-    }}
-  }}, 1000);
+      const percentile = total
+        ? ((below / total) * 100).toFixed(2)
+        : "0.00";
+
+      return {{ rank, percentile, total }};
+    }});
 }}
 
 /* data from Jinja */
@@ -1696,8 +1015,6 @@ function rebindResultHeaderActions() {{
         const res = document.getElementById("results");
         res.innerHTML = "";
         res.style.display = "block";
-        document.getElementById("previousAttempts").style.display = "block";
-        document.getElementById("attemptReplay").style.display = "none";
         loadPreviousAttempts("{quiz_name}", DEVICE_ID);
       }};
     }}
@@ -1706,11 +1023,16 @@ function rebindResultHeaderActions() {{
       btn.onclick = () => {{
         document.getElementById("results").innerHTML = LAST_RESULT_HTML;
         document.getElementById("results").style.display = "block";
-        document.getElementById("previousAttempts").style.display = "none";
-        document.getElementById("attemptReplay").style.display = "none";
       }};
     }}
   }});
+}}
+
+/* format mm:ss */
+function fmt(s){{
+  const m = Math.floor(s/60);
+  const sec = s%60;
+  return `${{String(m).padStart(2,"0")}}:${{String(sec).padStart(2,"0")}}`;
 }}
 
 /* Timer */
@@ -1768,11 +1090,6 @@ function init(){{
         document.getElementById("headerControls").innerHTML = data.headerHTML;
         rebindResultHeaderActions(); // ✅ REQUIRED FIX
       }}
-
-      // Load scoreboard data
-      setTimeout(() => {{
-        loadEmbeddedScoreboard("{quiz_name}");
-      }}, 500);
 
       return; // ❌ STOP QUIZ INIT
     }}
@@ -1881,8 +1198,8 @@ function loadPreviousAttempts(quizId, deviceId) {{
   document.getElementById("results").style.display = "none";
   document.getElementById("attemptReplay").style.display = "none";
 
-  database.ref("attempt_history/" + quizId + "/" + deviceId)
-    .once('value')
+  db.ref("attempt_history/" + quizId + "/" + deviceId)
+    .once("value")
     .then(snapshot => {{
       const data = snapshot.val();
       if (!data) {{
@@ -2009,7 +1326,7 @@ function submitQuiz(){{
   const unattempted = QUESTIONS.length - attempted;
   const accuracy = attempted ? ((correct/attempted) * 100).toFixed(1) : "0.0";
 
-  // build review HTML WITH EMBEDDED SCOREBOARD
+  // build review HTML
   let reviewHTML = `<div class="card"><h3 style="color:var(--accent);margin:0 0 10px">Results Summary</h3>
     <div class="stats">
       <div class="stat"><h4>Correct</h4><p>${{correct}}</p></div>
@@ -2024,70 +1341,8 @@ function submitQuiz(){{
       <button class="btn-ghost" onclick="filterResults('wrong')">WRONG</button>
       <button class="btn-ghost" onclick="filterResults('unattempted')">UNATTEMPTED</button>
     </div>
-    </div>
-  </div>`;
 
-  // 🏆 EMBEDDED SCOREBOARD SECTION
-  reviewHTML += `
-  <div class="scoreboard-section">
-    <div class="scoreboard-header">
-      <div class="scoreboard-title">Live Scoreboard</div>
-      <button class="refresh-btn" onclick="refreshScoreboard()">
-        🔄 Refresh Scoreboard
-      </button>
-    </div>
-    
-    <div class="scoreboard-stats">
-      <div class="stat-card">
-        <h3>Total Participants</h3>
-        <div class="value">0</div>
-        <div class="subtext">Unique attempts</div>
-      </div>
-      <div class="stat-card">
-        <h3>Average Score</h3>
-        <div class="value">0</div>
-        <div class="subtext">Out of ${{maxTotalMarks}}</div>
-      </div>
-      <div class="stat-card">
-        <h3>Average Accuracy</h3>
-        <div class="value">0%</div>
-        <div class="subtext">Correct attempts</div>
-      </div>
-      <div class="stat-card">
-        <h3>Average Time</h3>
-        <div class="value">00:00</div>
-        <div class="subtext">MM:SS format</div>
-      </div>
-    </div>
-    
-    <div class="legend">
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #FFD700, #FFA500)"></div>
-        <span>Rank 1 (Gold)</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #C0C0C0, #A0A0A0)"></div>
-        <span>Rank 2 (Silver)</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #CD7F32, #A0522D)"></div>
-        <span>Rank 3 (Bronze)</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: #e6f7ff"></div>
-        <span>Your Rank (Highlighted)</span>
-      </div>
-    </div>
-    
-    <div class="scoreboard-table-container">
-      <div class="loading-scoreboard">Loading scoreboard...</div>
-    </div>
-    
-    <div class="scoreboard-footer">
-      Showing top 50 participants • Updated: ${{new Date().toLocaleTimeString([], {{hour: '2-digit', minute:'2-digit'}})}}
-    </div>
-  </div>
-  `;
+</div></div>`;
 
   QUESTIONS.forEach((q,i)=>{{
     const qid = q.id ?? i;
@@ -2137,7 +1392,6 @@ function submitQuiz(){{
     correct,
     wrong,
     unattempted,
-    accuracy: parseFloat(accuracy),
     timeTaken,
     quizId: "{quiz_name}",
     deviceId: DEVICE_ID,
@@ -2172,24 +1426,23 @@ function submitQuiz(){{
           firebasePayload.percentile = data.percentile;
 
           // 🔥 UPDATE THIS ATTEMPT WITH RANK & PERCENTILE
-          database.ref(
+          db.ref(
           "attempt_history/" +
           firebasePayload.quizId + "/" +
           firebasePayload.deviceId + "/" +
           firebasePayload.submittedAt
           ).update({{
           rank: data.rank,
-          percentile: data.percentile,
-          accuracy: firebasePayload.accuracy
+          percentile: data.percentile
           }});
 
           const rankHTML = `
             <div class="stat">
-              <h4>Your Rank</h4>
+              <h4>Rank</h4>
               <p>${{data.rank}} / ${{data.total}}</p>
             </div>
             <div class="stat">
-              <h4>Your Percentile</h4>
+              <h4>Percentile</h4>
               <p>${{data.percentile}}%</p>
             </div>
           `;
@@ -2197,29 +1450,23 @@ function submitQuiz(){{
           document
             .querySelector("#results .stats")
             ?.insertAdjacentHTML("beforeend", rankHTML);
-            
-          // Load the embedded scoreboard
-          setTimeout(() => {{
-            loadEmbeddedScoreboard("{quiz_name}");
-          }}, 500);
-            
-          setTimeout(() => {{
-            const finalResultHTML = document.getElementById("results").innerHTML;
-            const headerHTML = document.getElementById("headerControls").innerHTML;
+            setTimeout(() => {{
+              const finalResultHTML = document.getElementById("results").innerHTML;
+              const headerHTML = document.getElementById("headerControls").innerHTML;
 
-            LAST_RESULT_HTML = finalResultHTML;
+              LAST_RESULT_HTML = finalResultHTML;
 
-            // 🔐 SAVE COMPLETE RESULT + HEADER STATE
-            localStorage.setItem(QUIZ_RESULT_KEY, JSON.stringify({{
-              submitted: true,
-              resultHTML: finalResultHTML,
-              headerHTML: headerHTML
-            }}));
-          }}, 1000);
+              // 🔐 SAVE COMPLETE RESULT + HEADER STATE
+              localStorage.setItem(QUIZ_RESULT_KEY, JSON.stringify({{
+                submitted: true,
+                resultHTML: finalResultHTML,
+                headerHTML: headerHTML
+              }}));
+            }}, 0);
         }});
     }});
 
-  // replace header controls with results controls
+  // replace header controls with results controls (Re-Attempt, Download, Print)
   const header = el("headerControls");
   header.innerHTML = "";
   const left = document.createElement("div");
@@ -2252,8 +1499,6 @@ function submitQuiz(){{
     const res = document.getElementById("results");
     res.innerHTML = "";                    // clear latest result
     res.style.display = "block";
-    document.getElementById("previousAttempts").style.display = "block";
-    document.getElementById("attemptReplay").style.display = "none";
     loadPreviousAttempts("{quiz_name}", DEVICE_ID);
   }};
 
@@ -2263,20 +1508,31 @@ function submitQuiz(){{
   backBtn.onclick = () => {{
     document.getElementById("results").innerHTML = LAST_RESULT_HTML;
     document.getElementById("results").style.display = "block";
-    document.getElementById("previousAttempts").style.display = "none";
-    document.getElementById("attemptReplay").style.display = "none";
-    
-    // Refresh scoreboard when going back
-    setTimeout(() => {{
-      loadEmbeddedScoreboard("{quiz_name}");
-    }}, 100);
   }};
 
   right.appendChild(prevBtn);
   right.appendChild(backBtn);
 
+  // Download & Print intentionally disabled
   header.appendChild(left);
   header.appendChild(right);
+}}
+
+/* Download current results page as .html named after quiz title */
+function downloadResults(){{
+  const head = document.head.outerHTML;
+  const resultsHtml = el("results").outerHTML;
+  const pageHtml = `<!doctype html><html>${{head}}<body><div style="padding:20px;max-width:1000px;margin:auto">${{resultsHtml}}</div></body></html>`;
+  const blob = new Blob([pageHtml], {{type:"text/html"}});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safe = String(QUIZ_TITLE).replace(/[^a-z0-9]/gi,"_");
+  a.href = url;
+  a.download = `${{safe}}_results.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }}
 
 /* attach DOM listeners */
@@ -2479,20 +1735,10 @@ window.addEventListener("DOMContentLoaded", init);
     # Calculate seconds
     seconds = int(quiz_data.get("time", "25")) * 60
     
-    # Get marks per question for the scoreboard
-    marks_per_question = quiz_data.get("marks", "3")
-    max_total_marks = len(quiz_data["questions"]) * int(marks_per_question)
-    
-    # Get the base URL for scoreboard API
-    scoreboard_base_url = RENDER_APP_URL if RENDER_APP_URL else "http://localhost:10000"
-    
     html = template.format(
         quiz_name=quiz_data["name"],
         questions_array=questions_js,
-        seconds=seconds,
-        marks=marks_per_question,
-        max_total_marks=max_total_marks,
-        scoreboard_base_url=scoreboard_base_url
+        seconds=seconds
     )
     
     return html
@@ -2521,8 +1767,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "(b) Option 2 English\n"
         "Option 2 Hindi\n"
         "Answer: (a)\n\n"
-        "**NEW: Embedded Scoreboard!** 🏆\n"
-        "After submitting, see live rankings directly in results.\n\n"
         "**Commands:**\n"
         "/start - Show this message\n"
         "/help - Show help\n"
@@ -2732,20 +1976,14 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Show summary with proper format
     total_questions = len(context.user_data["questions"])
-    marks_per_q = context.user_data.get("marks", "3")
-    max_total_marks = total_questions * int(marks_per_q)
-    
     summary = (
         "📋 *Quiz Summary*\n\n"
         f"📘 QUIZ ID: {context.user_data['name']}\n"
         f"📊 TOTAL QUESTIONS: {total_questions}\n"
-        f"🎯 MAX MARKS: {max_total_marks}\n"
         f"⏱️ TIME: {context.user_data['time']} Minutes\n"
         f"✍️ EACH QUESTION MARK: {context.user_data['marks']}\n"
         f"⚠️ NEGATIVE MARKING: {context.user_data['negative']}\n"
         f"🏆 CREATED BY: {context.user_data['creator']}\n\n"
-        "🌟 *NEW: Embedded Live Scoreboard!* 🏆\n"
-        "Users will see rankings immediately after submission.\n\n"
         "🔄 Generating quiz HTML..."
     )
     
@@ -2791,16 +2029,10 @@ async def get_creator(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        f"Download and open in any browser.\n\n"
                        f"📘 QUIZ ID: {context.user_data['name']}\n"
                        f"📊 TOTAL QUESTIONS: {total_questions}\n"
-                       f"🎯 MAX MARKS: {max_total_marks}\n"
                        f"⏱️ TIME: {context.user_data['time']} Minutes\n"
                        f"✍️ EACH QUESTION MARK: {context.user_data['marks']}\n"
                        f"⚠️ NEGATIVE MARKING: {context.user_data['negative']}\n"
-                       f"🏆 CREATED BY: {context.user_data['creator']}\n\n"
-                       f"🌟 *NEW FEATURE:* Embedded Live Scoreboard! 🏆\n"
-                       f"• See rankings immediately after submission\n"
-                       f"• Top 50 leaderboard with medals\n"
-                       f"• Your rank highlighted\n"
-                       f"• Real-time updates",
+                       f"🏆 CREATED BY: {context.user_data['creator']}",
                 parse_mode="Markdown"
             )
         
@@ -2840,14 +2072,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /wake - Keep the bot awake
 /status - Check bot status
 /cancel - Cancel current operation
-
-*NEW: Embedded Live Scoreboard 🏆*
-• Rankings appear immediately after quiz submission
-• Top 50 participants with medals (🥇🥈🥉)
-• Your rank highlighted in blue
-• Real-time updates with refresh button
-• Average scores and accuracy stats
-• Percentile ranking system
 
 *Supported File Formats:*
 Format 1:
@@ -2992,7 +2216,7 @@ def main():
     application.add_handler(CommandHandler("status", status_command))
     application.add_error_handler(error_handler)
     
-    logger.info("Quiz Generator Bot with Embedded Scoreboard is starting...")
+    logger.info("Quiz Generator Bot is starting...")
     
     # Start the bot
     try:
