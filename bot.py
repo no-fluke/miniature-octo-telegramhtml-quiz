@@ -1441,14 +1441,14 @@ function displayEmbeddedScoreboard(data) {{
   
   const scores = data.scores || [];
   const totalAttempts = data.total_attempts || 0;
-  const averages = data.averages || {{}};
+  const averages = data.averages || {{score: 0, accuracy: 0, time: 0}};
   
   // Update stats cards
   const statCards = scoreboardSection.querySelectorAll(".stat-card .value");
   if (statCards.length >= 4) {{
     statCards[0].textContent = totalAttempts;
     statCards[1].textContent = averages.score || 0;
-    statCards[2].textContent = `${averages.accuracy || 0}%`;
+    statCards[2].textContent = `${{averages.accuracy || 0}}%`;
     statCards[3].textContent = fmt(averages.time || 0);
   }}
   
